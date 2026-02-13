@@ -48,14 +48,15 @@ CLI (Click via Ape)
 - `src/twyne_cli/commands/vault.py` — vault health, info, list
 - `src/twyne_cli/commands/protocol.py` — protocol overview, rates
 - `src/twyne_cli/commands/user.py` — user portfolio
-- `src/twyne_cli/contracts.py` — ABI loading from bundled JSON, contract instantiation, address registry
+- `src/twyne_cli/contracts.py` — ABI loading via importlib.resources, contract instantiation, address registry
 - `src/twyne_cli/formatting.py` — TTY-aware output (tables vs JSON)
 - `src/twyne_cli/constants.py` — MAXFACTOR (1e4), WAD (1e18), USD_ADDRESS
+- `src/twyne_cli/commands/config.py` — Persistent config (set-rpc, get-rpc, clear-rpc)
 
-### Data Files
+### Data Files (bundled inside package)
 
-- `abis/` — Bundled contract ABIs (CollateralVault, HealthStatViewer, VaultManager, etc.)
-- `addresses/mainnet.json` — Contract addresses from tech-notes (source of truth)
+- `src/twyne_cli/abis/` — Bundled contract ABIs (CollateralVault, HealthStatViewer, VaultManager, etc.)
+- `src/twyne_cli/addresses/mainnet.json` — Contract addresses from tech-notes (source of truth)
 
 ## Environment Variables
 
