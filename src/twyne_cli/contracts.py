@@ -2,7 +2,7 @@
 
 import json
 import os
-from pathlib import Path
+from importlib import resources
 
 from ape import Contract
 
@@ -10,16 +10,14 @@ from ape import Contract
 # ABI loading
 # --------------------------------------------------------------------------- #
 
-_ABI_DIR = Path(__file__).resolve().parent.parent.parent / "abis"
 _ABI_CACHE: dict[str, list] = {}
 
 
 def _load_abi(name: str) -> list:
     """Load an ABI JSON file by contract name (cached)."""
     if name not in _ABI_CACHE:
-        path = _ABI_DIR / f"{name}.json"
-        with open(path) as f:
-            _ABI_CACHE[name] = json.load(f)
+        ref = resources.files("twyne_cli") / "abis" / f"{name}.json"
+        _ABI_CACHE[name] = json.loads(ref.read_text())
     return _ABI_CACHE[name]
 
 
@@ -27,7 +25,6 @@ def _load_abi(name: str) -> list:
 # Address registry
 # --------------------------------------------------------------------------- #
 
-_ADDR_DIR = Path(__file__).resolve().parent.parent.parent / "addresses"
 _ADDRESSES: dict | None = None
 
 
@@ -35,9 +32,8 @@ def _load_addresses() -> dict:
     """Load mainnet addresses (cached). Env overrides take precedence."""
     global _ADDRESSES
     if _ADDRESSES is None:
-        path = _ADDR_DIR / "mainnet.json"
-        with open(path) as f:
-            _ADDRESSES = json.load(f)
+        ref = resources.files("twyne_cli") / "addresses" / "mainnet.json"
+        _ADDRESSES = json.loads(ref.read_text())
     return _ADDRESSES
 
 
