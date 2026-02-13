@@ -3,8 +3,12 @@
 import os
 
 import click
+from dotenv import load_dotenv
 
 from .context import TwyneContext
+
+# Auto-load .env from the current directory (or parent dirs)
+load_dotenv()
 
 
 @click.group()
