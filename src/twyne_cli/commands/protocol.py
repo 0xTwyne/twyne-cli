@@ -2,14 +2,19 @@
 
 import click
 from ape import Contract
-from ape_ethereum.multicall import Call
 
 from ..context import TwyneContext, pass_ctx
-from ..constants import MAXFACTOR, WAD
-from ..contracts import intermediate_vaults, vault_manager, _load_abi
+from ..constants import MAXFACTOR
+from ..contracts import (
+    collateral_vault,
+    collateral_vault_factory,
+    intermediate_vaults,
+    vault_manager,
+    _load_abi,
+)
 from ..formatting import (
+    format_address,
     format_bps,
-    format_usd,
     is_tty,
     output_json,
     output_table,
@@ -25,115 +30,152 @@ def protocol():
 @protocol.command()
 @pass_ctx
 def overview(ctx: TwyneContext):
-    """Show intermediate vaults, TVL, and protocol parameters."""
+    """Show collateral asset parameters and intermediate vault mappings."""
     ctx.connect()
     try:
         block = ctx.resolve_block()
-        iv_map = intermediate_vaults()
         vm = vault_manager()
+        factory = collateral_vault_factory()
+        iv_map = intermediate_vaults()
 
-        # For each intermediate vault, query parameters
-        vault_data = []
-        evault_abi = _load_abi("CollateralVault")  # EVaults share similar view interface
+        # Reverse map: IV address → IV name
+        iv_addr_to_name = {addr.lower(): name for name, addr in iv_map.items()}
 
-        for name, addr in iv_map.items():
+        # Scan factory events to discover unique collateral assets
+        click.echo("Scanning factory events to discover collateral assets...", err=True)
+        from ape import chain
+        stop_block = block if block else chain.blocks.height
+        events = list(factory.T_CollateralVaultCreated.range(0, stop_block))
+
+        # Collect unique assets from a sample of vaults
+        cv_abi = _load_abi("CollateralVault")
+        seen_assets: set[str] = set()
+        asset_data: list[dict] = []
+
+        for evt in events:
+            vault_addr = evt.vault
             try:
-                iv_contract = Contract(addr, abi=evault_abi)
+                cv = Contract(vault_addr, abi=cv_abi)
+                asset_addr = cv.asset(block_identifier=block)
+            except Exception:
+                continue
 
-                # Query VaultManager params — keyed by intermediate vault address
-                max_ltv = vm.maxTwyneLTVs(addr, block_identifier=block)
-                ext_buffer = vm.externalLiqBuffers(addr, block_identifier=block)
+            if asset_addr.lower() in seen_assets:
+                continue
+            seen_assets.add(asset_addr.lower())
 
-                # Try to get total assets from the intermediate vault
-                try:
-                    total_assets = iv_contract.totalAssetsDepositedOrReserved(block_identifier=block)
-                except Exception:
-                    total_assets = None
+            # Query VaultManager params keyed by collateral asset address
+            try:
+                max_ltv = vm.maxTwyneLTVs(asset_addr, block_identifier=block)
+                ext_buffer = vm.externalLiqBuffers(asset_addr, block_identifier=block)
+                iv_addr = vm.getIntermediateVault(asset_addr, block_identifier=block)
+                iv_name = iv_addr_to_name.get(iv_addr.lower(), format_address(iv_addr))
 
-                vault_data.append({
-                    "name": name,
-                    "address": addr,
+                asset_data.append({
+                    "collateral_asset": asset_addr,
+                    "intermediate_vault": iv_name,
+                    "iv_address": iv_addr,
                     "max_twyne_ltv_bps": max_ltv,
+                    "max_twyne_ltv_pct": max_ltv / MAXFACTOR * 100,
                     "external_liq_buffer_bps": ext_buffer,
-                    "total_assets_raw": str(total_assets) if total_assets is not None else "N/A",
+                    "external_liq_buffer_pct": ext_buffer / MAXFACTOR * 100,
                 })
-            except Exception as e:
-                vault_data.append({
-                    "name": name,
-                    "address": addr,
-                    "error": str(e),
+            except Exception:
+                asset_data.append({
+                    "collateral_asset": asset_addr,
+                    "error": "Failed to query VaultManager",
                 })
 
         if ctx.force_json or not is_tty():
-            output_json({"intermediate_vaults": vault_data})
+            output_json({
+                "total_collateral_assets": len(asset_data),
+                "collateral_assets": asset_data,
+            })
         else:
             rows = []
-            for v in vault_data:
-                if "error" in v:
-                    rows.append([v["name"], v["address"][:10] + "...", "ERROR", "ERROR", "N/A"])
+            for a in asset_data:
+                if "error" in a:
+                    rows.append([format_address(a["collateral_asset"]), "?", "ERR", "ERR"])
                 else:
                     rows.append([
-                        v["name"],
-                        v["address"][:10] + "...",
-                        format_bps(v["max_twyne_ltv_bps"]),
-                        format_bps(v["external_liq_buffer_bps"]),
-                        v["total_assets_raw"],
+                        format_address(a["collateral_asset"]),
+                        a["intermediate_vault"],
+                        format_bps(a["max_twyne_ltv_bps"]),
+                        format_bps(a["external_liq_buffer_bps"]),
                     ])
             output_table(
-                ["Name", "Address", "Max LTV", "Ext Buffer", "Total Assets (raw)"],
+                ["Collateral Asset", "Intermediate Vault", "Max LTV", "Ext Liq Buffer"],
                 rows,
-                title="Protocol Overview — Intermediate Vaults",
+                title="Protocol Overview — Collateral Asset Parameters",
             )
     finally:
         ctx.disconnect()
 
 
 @protocol.command()
-@click.argument("iv_address")
+@click.argument("asset_or_iv_address")
 @pass_ctx
-def rates(ctx: TwyneContext, iv_address: str):
-    """Show interest rates and utilization for an intermediate vault."""
+def rates(ctx: TwyneContext, asset_or_iv_address: str):
+    """Show parameters for a collateral asset or intermediate vault address."""
     ctx.connect()
     try:
         block = ctx.resolve_block()
         vm = vault_manager()
 
-        # Query VaultManager params
-        max_ltv = vm.maxTwyneLTVs(iv_address, block_identifier=block)
-        ext_buffer = vm.externalLiqBuffers(iv_address, block_identifier=block)
+        # Try as collateral asset first — if maxTwyneLTVs returns non-zero, it's an asset
+        max_ltv = vm.maxTwyneLTVs(asset_or_iv_address, block_identifier=block)
 
-        # Try to get EVault-specific rate data (CreditEVault extends EVault)
-        # EVault has interestRate(), totalBorrows(), totalAssets(), etc.
-        evault_abi = _load_abi("CollateralVault")
-        iv = Contract(iv_address, abi=evault_abi)
+        if max_ltv > 0:
+            # It's a collateral asset address
+            ext_buffer = vm.externalLiqBuffers(asset_or_iv_address, block_identifier=block)
+            iv_addr = vm.getIntermediateVault(asset_or_iv_address, block_identifier=block)
 
-        rate_data = {
-            "intermediate_vault": iv_address,
-            "max_twyne_ltv_bps": max_ltv,
-            "external_liq_buffer_bps": ext_buffer,
-        }
+            rate_data = {
+                "collateral_asset": asset_or_iv_address,
+                "intermediate_vault": iv_addr,
+                "max_twyne_ltv_bps": max_ltv,
+                "max_twyne_ltv_pct": max_ltv / MAXFACTOR * 100,
+                "external_liq_buffer_bps": ext_buffer,
+                "external_liq_buffer_pct": ext_buffer / MAXFACTOR * 100,
+            }
 
-        # Try various EVault view functions — these may not all exist
-        for fn_name in ["totalAssetsDepositedOrReserved", "maxRelease", "maxRepay"]:
+            # Try to get target vault count for the IV
             try:
-                val = getattr(iv, fn_name)(block_identifier=block)
-                rate_data[fn_name] = str(val)
+                tv_len = vm.targetVaultLength(iv_addr, block_identifier=block)
+                rate_data["target_vault_count"] = tv_len
             except Exception:
-                rate_data[fn_name] = "N/A"
+                pass
+
+        else:
+            # Might be an IV address — query target vault info
+            rate_data = {
+                "address": asset_or_iv_address,
+                "note": "Not a registered collateral asset. If this is an IV, use 'protocol overview' to see all assets.",
+            }
+
+            try:
+                tv_len = vm.targetVaultLength(asset_or_iv_address, block_identifier=block)
+                rate_data["target_vault_count"] = tv_len
+                targets = []
+                for i in range(tv_len):
+                    tv = vm.allowedTargetVaultList(asset_or_iv_address, i, block_identifier=block)
+                    targets.append(tv)
+                rate_data["allowed_target_vaults"] = targets
+            except Exception:
+                pass
 
         if ctx.force_json or not is_tty():
             output_json(rate_data)
         else:
-            pairs = [
-                ("Intermediate Vault", iv_address),
-                ("Max Twyne LTV", format_bps(max_ltv)),
-                ("External Liq Buffer", format_bps(ext_buffer)),
-            ]
-            for key in ["totalAssetsDepositedOrReserved", "maxRelease", "maxRepay"]:
-                if rate_data.get(key) != "N/A":
-                    pairs.append((key, rate_data[key]))
-
             from ..formatting import output_kv
-            output_kv(pairs, title="Intermediate Vault Rates")
+            pairs = []
+            for k, v in rate_data.items():
+                if k.endswith("_bps"):
+                    pairs.append((k, format_bps(v)))
+                elif isinstance(v, list):
+                    pairs.append((k, ", ".join(str(x) for x in v)))
+                else:
+                    pairs.append((k, str(v)))
+            output_kv(pairs, title="Protocol Rates")
     finally:
         ctx.disconnect()

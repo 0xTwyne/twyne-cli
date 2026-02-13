@@ -19,6 +19,11 @@ class TwyneContext:
             raise click.ClickException(
                 "No RPC URL provided. Set RPC_URL environment variable or use --rpc flag."
             )
+
+        # Suppress ape's INFO logging (uses ClickHandler → stdout, breaks JSON pipe)
+        from ape.logging import logger as ape_logger
+        ape_logger.set_level("WARNING")
+
         self._provider_ctx = networks.ethereum.mainnet.use_provider(
             "node", provider_settings={"uri": self.rpc_url}
         )
