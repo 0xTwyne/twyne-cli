@@ -1,0 +1,5 @@
+name: twyne-cli
+
+ethereum:
+  mainnet:
+    default_provider: node
