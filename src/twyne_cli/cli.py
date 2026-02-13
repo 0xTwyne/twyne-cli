@@ -2,6 +2,7 @@
 
 import click
 
+from .commands.config import load_config
 from .context import TwyneContext
 
 
@@ -13,11 +14,14 @@ from .context import TwyneContext
 @click.pass_context
 def cli(ctx, rpc, force_json, block):
     """Twyne Protocol CLI — query on-chain state."""
+    # Resolution order: --rpc flag > $RPC_URL env var > ~/.config/twyne/config.json > Ape default
+    rpc_url = rpc or load_config().get("rpc_url")
     ctx.ensure_object(dict)
-    ctx.obj = TwyneContext(rpc_url=rpc, force_json=force_json, block=block)
+    ctx.obj = TwyneContext(rpc_url=rpc_url, force_json=force_json, block=block)
 
 
 # Import and register subcommands after cli is defined to avoid circular imports
+from .commands.config import config  # noqa: E402
 from .commands.protocol import protocol  # noqa: E402
 from .commands.user import user  # noqa: E402
 from .commands.vault import vault  # noqa: E402
@@ -25,3 +29,4 @@ from .commands.vault import vault  # noqa: E402
 cli.add_command(vault)
 cli.add_command(protocol)
 cli.add_command(user)
+cli.add_command(config)
