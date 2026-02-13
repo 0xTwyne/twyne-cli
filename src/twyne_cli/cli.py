@@ -1,27 +1,20 @@
 """Twyne CLI entry point — Click group with global flags."""
 
-import os
-
 import click
-from dotenv import load_dotenv
 
 from .context import TwyneContext
 
-# Auto-load .env from the current directory (or parent dirs)
-load_dotenv()
-
 
 @click.group()
-@click.option("--rpc", envvar="RPC_URL", default=None, help="Ethereum RPC URL (default: $RPC_URL)")
+@click.option("--rpc", envvar="RPC_URL", default=None, help="Ethereum RPC URL (default: $RPC_URL or Ape default)")
 @click.option("--json", "force_json", is_flag=True, default=False, help="Force JSON output")
 @click.option("--block", type=int, default=None, help="Query at specific block number")
 @click.version_option(package_name="twyne-cli")
 @click.pass_context
 def cli(ctx, rpc, force_json, block):
     """Twyne Protocol CLI — query on-chain state."""
-    rpc_url = rpc or os.environ.get("RPC_URL") or ""
     ctx.ensure_object(dict)
-    ctx.obj = TwyneContext(rpc_url=rpc_url, force_json=force_json, block=block)
+    ctx.obj = TwyneContext(rpc_url=rpc, force_json=force_json, block=block)
 
 
 # Import and register subcommands after cli is defined to avoid circular imports

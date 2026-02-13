@@ -59,7 +59,7 @@ CLI (Click via Ape)
 
 ## Environment Variables
 
-- `RPC_URL` — Ethereum mainnet RPC endpoint (required)
+- `RPC_URL` — Ethereum mainnet RPC endpoint (optional; falls back to Ape's default provider)
 
 ## Conventions
 
