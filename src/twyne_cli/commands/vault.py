@@ -6,11 +6,11 @@ from ape_ethereum.multicall import Call
 
 from ..context import TwyneContext, pass_ctx
 from ..constants import MAXFACTOR, USD_ADDRESS, WAD
+from ..cache import get_vault_cache
 from ..contracts import (
     aave_oracle,
     aave_v3_pool,
     collateral_vault,
-    collateral_vault_factory,
     euler_oracle,
     health_stat_viewer,
 )
@@ -213,31 +213,30 @@ def info(ctx: TwyneContext, address: str):
 @vault.command("list")
 @pass_ctx
 def list_vaults(ctx: TwyneContext):
-    """List all collateral vaults (scans factory events)."""
+    """List all collateral vaults (uses incremental cache)."""
     ctx.connect()
     try:
-        factory = collateral_vault_factory()
-
-        click.echo("Scanning CollateralVaultFactory for T_CollateralVaultCreated events...")
-        events = list(factory.T_CollateralVaultCreated.range(0, None))
+        cache = get_vault_cache(ctx)
+        block = ctx.resolve_block()
+        vaults = cache.get_vaults(up_to_block=block)
 
         if ctx.force_json or not is_tty():
             output_json({
-                "total_vaults": len(events),
+                "total_vaults": len(vaults),
                 "vaults": [
-                    {"address": str(e.vault), "block": e.block_number}
-                    for e in events
+                    {"address": v.address, "block": v.block}
+                    for v in vaults
                 ],
             })
         else:
             rows = [
-                [str(i + 1), format_address(str(e.vault)), str(e.vault), str(e.block_number)]
-                for i, e in enumerate(events)
+                [str(i + 1), format_address(v.address), v.address, str(v.block)]
+                for i, v in enumerate(vaults)
             ]
             output_table(
                 ["#", "Short", "Address", "Created Block"],
                 rows,
-                title=f"Collateral Vaults ({len(events)} total)",
+                title=f"Collateral Vaults ({len(vaults)} total)",
             )
     finally:
         ctx.disconnect()

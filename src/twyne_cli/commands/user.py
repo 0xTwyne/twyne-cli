@@ -2,9 +2,10 @@
 
 import click
 
+from ..cache import get_vault_cache
 from ..context import TwyneContext, pass_ctx
 from ..constants import WAD
-from ..contracts import collateral_vault, collateral_vault_factory, health_stat_viewer
+from ..contracts import collateral_vault, health_stat_viewer
 from ..formatting import (
     format_address,
     format_hf,
@@ -24,21 +25,20 @@ def user(ctx: TwyneContext, wallet: str):
     ctx.connect()
     try:
         block = ctx.resolve_block()
-        factory = collateral_vault_factory()
 
-        click.echo(f"Scanning factory events for vaults owned by {wallet}...")
+        # Use cached vault list, query borrower() live (mutable via liquidation)
+        cache = get_vault_cache(ctx)
+        cached_vaults = cache.get_vaults(up_to_block=block)
 
-        # Get all vault creation events
-        events = list(factory.T_CollateralVaultCreated.range(0, None))
+        click.echo(f"Checking {len(cached_vaults)} vaults for owner {wallet}...", err=True)
 
-        # Filter to vaults owned by this wallet
         owned_vaults = []
-        for e in events:
+        for v in cached_vaults:
             try:
-                cv = collateral_vault(str(e.vault))
+                cv = collateral_vault(v.address)
                 borrower = cv.borrower(block_identifier=block)
                 if borrower.lower() == wallet.lower():
-                    owned_vaults.append(str(e.vault))
+                    owned_vaults.append(v.address)
             except Exception:
                 continue
 

@@ -7,10 +7,11 @@ from ape import networks
 class TwyneContext:
     """Shared context passed to all subcommands."""
 
-    def __init__(self, rpc_url: str | None, force_json: bool, block: int | None):
+    def __init__(self, rpc_url: str | None, force_json: bool, block: int | None, no_cache: bool = False):
         self.rpc_url = rpc_url
         self.force_json = force_json
         self.block = block
+        self.no_cache = no_cache
         self._provider_ctx = None
 
     def connect(self):

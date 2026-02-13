@@ -1,16 +1,13 @@
 """Protocol commands — overview, rates."""
 
 import click
-from ape import Contract
 
+from ..cache import get_vault_cache
 from ..context import TwyneContext, pass_ctx
 from ..constants import MAXFACTOR
 from ..contracts import (
-    collateral_vault,
-    collateral_vault_factory,
     intermediate_vaults,
     vault_manager,
-    _load_abi,
 )
 from ..formatting import (
     format_address,
@@ -35,36 +32,20 @@ def overview(ctx: TwyneContext):
     try:
         block = ctx.resolve_block()
         vm = vault_manager()
-        factory = collateral_vault_factory()
         iv_map = intermediate_vaults()
 
         # Reverse map: IV address → IV name
         iv_addr_to_name = {addr.lower(): name for name, addr in iv_map.items()}
 
-        # Scan factory events to discover unique collateral assets
-        click.echo("Scanning factory events to discover collateral assets...", err=True)
-        from ape import chain
-        stop_block = block if block else chain.blocks.height
-        events = list(factory.T_CollateralVaultCreated.range(0, stop_block))
+        # Use cached vault+asset data instead of scanning events
+        cache = get_vault_cache(ctx)
+        unique_assets = cache.get_unique_assets(up_to_block=block)
 
-        # Collect unique assets from a sample of vaults
-        cv_abi = _load_abi("CollateralVault")
-        seen_assets: set[str] = set()
         asset_data: list[dict] = []
+        for asset_addr_lower, _vault_addrs in unique_assets.items():
+            asset_addr = asset_addr_lower  # already lowercase from cache
 
-        for evt in events:
-            vault_addr = evt.vault
-            try:
-                cv = Contract(vault_addr, abi=cv_abi)
-                asset_addr = cv.asset(block_identifier=block)
-            except Exception:
-                continue
-
-            if asset_addr.lower() in seen_assets:
-                continue
-            seen_assets.add(asset_addr.lower())
-
-            # Query VaultManager params keyed by collateral asset address
+            # Query VaultManager params live (governance-controlled, not cached)
             try:
                 max_ltv = vm.maxTwyneLTVs(asset_addr, block_identifier=block)
                 ext_buffer = vm.externalLiqBuffers(asset_addr, block_identifier=block)

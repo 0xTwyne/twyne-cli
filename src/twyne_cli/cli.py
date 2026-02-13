@@ -10,14 +10,15 @@ from .context import TwyneContext
 @click.option("--rpc", envvar="RPC_URL", default=None, help="Ethereum RPC URL (default: $RPC_URL or Ape default)")
 @click.option("--json", "force_json", is_flag=True, default=False, help="Force JSON output")
 @click.option("--block", type=int, default=None, help="Query at specific block number")
+@click.option("--no-cache", is_flag=True, default=False, help="Bypass vault cache, force full rescan")
 @click.version_option(package_name="twyne-cli")
 @click.pass_context
-def cli(ctx, rpc, force_json, block):
+def cli(ctx, rpc, force_json, block, no_cache):
     """Twyne Protocol CLI — query on-chain state."""
     # Resolution order: --rpc flag > $RPC_URL env var > ~/.config/twyne/config.json > Ape default
     rpc_url = rpc or load_config().get("rpc_url")
     ctx.ensure_object(dict)
-    ctx.obj = TwyneContext(rpc_url=rpc_url, force_json=force_json, block=block)
+    ctx.obj = TwyneContext(rpc_url=rpc_url, force_json=force_json, block=block, no_cache=no_cache)
 
 
 # Import and register subcommands after cli is defined to avoid circular imports
