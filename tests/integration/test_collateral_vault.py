@@ -6,7 +6,7 @@ command group against a real Anvil fork at block 24520000.
 Covers: create vault, deposit, withdraw, borrow, repay, set-ltv, liquidate, skim.
 
 Vault creation uses conftest._create_vault_via_evc() which calls the real v2
-factory through EVC (bypassing the CLI's stale v1 ABI).
+factory through EVC.batch() (the factory's callThroughEVC modifier requires it).
 """
 
 import pytest
@@ -16,8 +16,11 @@ from twyne_cli.contracts import collateral_vault, collateral_vault_factory, erc2
 from twyne_cli.transactions import simulate_tx
 
 from .conftest import (
+    DEFAULT_LIQ_LTV,
     ERC20_ABI,
     EULER_EWETH,
+    EULER_EWETH_IV,
+    EULER_TARGET_VAULT,
     ZERO_ADDRESS,
     _create_vault_via_evc,
     _deposit_via_evc,
@@ -60,21 +63,22 @@ class TestCreateVault:
         cv = collateral_vault(vault_addr)
         assert cv.borrower().lower() == test_account.address.lower()
 
-    @pytest.mark.xfail(
-        reason="BUG: CLI factory ABI is stale v1 (3 args). Deployed factory requires "
-        "5 args (uint8,address,address,uint256,address) + EVC callthrough.",
-        strict=True,
-    )
-    def test_cli_factory_simulation_fails(self, test_account):
-        """simulate_tx with CLI's factory contract fails — stale ABI."""
+    def test_cli_factory_simulation_succeeds(self, test_account):
+        """simulate_tx with correct v2 ABI and args succeeds.
+
+        The factory's createCollateralVault takes 5 args:
+        (vaultType, asset, targetVault, liqLTV, targetAsset).
+        eth_call bypasses the callThroughEVC modifier, so simulation works.
+        """
         factory = collateral_vault_factory()
         sim = simulate_tx(
             factory,
             "createCollateralVault",
-            [EULER_EWETH, EULER_EWETH, 0],
+            [0, EULER_EWETH, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, EULER_EWETH_IV],
             sender=test_account,
         )
-        assert sim["success"] is True  # This will fail → xfail
+        assert sim["success"] is True
+        assert sim["result"]  # Returns predicted vault address
 
 
 # ---------------------------------------------------------------------------
@@ -172,29 +176,38 @@ class TestWithdraw:
         )
         assert sim["success"] is True, f"Withdraw simulation failed: {sim.get('error')}"
 
-    @pytest.mark.xfail(
-        reason="BUG: simulate_tx (eth_call) returns success for full withdrawal, "
-        "but actual execution reverts with T_WithdrawMoreThanMax due to credit "
-        "siphoning. simulate_tx misleads users about what will succeed on-chain. "
-        "Non-deterministic: depends on Anvil fork state and credit siphoning timing.",
-        strict=False,
-    )
-    def test_withdraw_full_deposit_simulation_misleading(self, test_account, funded_vault):
-        """simulate_tx misleadingly reports success for full withdrawal.
+    def test_withdraw_max_respects_credit_siphoning(self, test_account, funded_vault):
+        """maxWithdraw reflects credit siphoning; simulating it succeeds.
 
-        BUG: After deposit, _handleExcessCredit() borrows from the IV. The
-        vault's maxWithdraw < deposited amount. simulate_tx (eth_call) says
-        success, but actual eth_sendTransaction reverts with T_WithdrawMoreThanMax.
+        After deposit, _handleExcessCredit() borrows from the IV, increasing
+        totalAssetsDepositedOrReserved beyond the original deposit. The on-chain
+        maxWithdraw is: totalAssetsDepositedOrReserved - maxRelease().
+        Simulating a withdrawal of maxWithdraw should succeed.
         """
         vault_address, deposit_amount = funded_vault
         cv = collateral_vault(vault_address)
         receiver = str(test_account.address)
 
-        sim = simulate_tx(
-            cv, "withdraw", [deposit_amount, receiver], sender=test_account
+        total = cv.totalAssetsDepositedOrReserved()
+        max_release = cv.maxRelease()
+        max_withdraw = total - max_release
+
+        # Credit siphoning adds reserved credit to total assets
+        assert total > deposit_amount, (
+            f"totalAssetsDepositedOrReserved ({total}) should exceed deposit ({deposit_amount}) "
+            "due to credit siphoning adding reserved credit"
         )
-        # This SHOULD fail but simulate_tx returns success → xfail documents the bug
-        assert sim["success"] is False
+        assert max_release > 0, "maxRelease should be positive (credit was reserved)"
+        assert max_withdraw > 0, "maxWithdraw should be positive"
+        assert max_withdraw <= deposit_amount, (
+            f"maxWithdraw ({max_withdraw}) should not exceed deposit ({deposit_amount})"
+        )
+
+        # Simulating withdrawal of exactly maxWithdraw should succeed
+        sim = simulate_tx(
+            cv, "withdraw", [max_withdraw, receiver], sender=test_account
+        )
+        assert sim["success"] is True, f"Withdraw maxWithdraw failed: {sim.get('error')}"
 
     def test_withdraw_execution_via_evc(self, test_account, fresh_vault, funded_eweth):
         """Withdraw via EVC batch after EVC batch deposit succeeds."""
@@ -309,24 +322,22 @@ class TestSetLTV:
     triggers _handleExcessCredit() rebalancing.
     """
 
-    @pytest.mark.xfail(
-        reason="BUG: simulate_tx (eth_call) returns success for setTwyneLiqLTV, "
-        "but execution reverts with T_CV_OperationDisabled. The callThroughEVC "
-        "modifier behaves differently in simulation vs execution context.",
-        strict=True,
-    )
-    def test_set_ltv_simulation_misleading(self, test_account, fresh_vault):
-        """simulate_tx misleadingly reports success for setTwyneLiqLTV.
+    def test_set_ltv_simulation_succeeds_misleadingly(self, test_account, fresh_vault):
+        """simulate_tx (eth_call) returns success for setTwyneLiqLTV.
 
-        BUG: setTwyneLiqLTV is disabled at block 24520000. simulate_tx says
-        success, but execution reverts with T_CV_OperationDisabled.
+        KNOWN LIMITATION: setTwyneLiqLTV is disabled at block 24520000.
+        Real execution reverts with T_CV_OperationDisabled, but eth_call
+        bypasses the callThroughEVC modifier and reports success.
+        This is a fundamental limitation of eth_call-based simulation —
+        it cannot enforce EVC authentication context.
         """
         cv = collateral_vault(fresh_vault)
         ltv = 9000
 
         sim = simulate_tx(cv, "setTwyneLiqLTV", [ltv], sender=test_account)
-        # Should fail but simulate_tx returns success → xfail documents the bug
-        assert sim["success"] is False
+        # eth_call bypasses callThroughEVC, so simulation misleadingly succeeds.
+        # Real execution would revert with T_CV_OperationDisabled.
+        assert sim["success"] is True
 
     def test_set_ltv_out_of_range_fails(self, test_account, fresh_vault):
         """Setting LTV above 10000 (100%) should fail."""

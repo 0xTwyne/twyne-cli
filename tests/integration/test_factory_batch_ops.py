@@ -26,9 +26,12 @@ from .conftest import (
     AAVE_TELEPORT_OP,
     BEACON_EULER_EWETH,
     CV_FACTORY,
+    DEFAULT_LIQ_LTV,
     EULER_DELEVERAGE_OP,
     EULER_EWETH,
+    EULER_EWETH_IV,
     EULER_LEVERAGE_OP,
+    EULER_TARGET_VAULT,
     TWYNE_EVC,
     ZERO_ADDRESS,
     _create_vault_via_evc,
@@ -42,8 +45,9 @@ from .conftest import (
 class TestFactoryCreateVault:
     """Tests for CollateralVaultFactory.createCollateralVault().
 
-    NOTE: The CLI's bundled factory ABI is stale v1 (3 args). The deployed
-    factory requires v2 (5 args) + EVC callthrough. Tests document this bug.
+    The factory ABI uses v2 (5 args: vaultType, asset, targetVault, liqLTV,
+    targetAsset). The callThroughEVC modifier requires real transactions to
+    go through EVC.batch(), but eth_call (simulation) bypasses this.
     """
 
     def test_create_vault_via_evc_succeeds(self, test_account, ape_provider):
@@ -57,32 +61,29 @@ class TestFactoryCreateVault:
         factory = collateral_vault_factory()
         assert str(factory.address).lower() == CV_FACTORY.lower()
 
-    @pytest.mark.xfail(
-        reason="BUG: CLI factory ABI is stale v1 (3 args: beacon, salt). "
-        "Deployed factory requires v2 (5 args: vaultType, asset, targetVault, "
-        "liqLTV, targetAsset) + EVC callthrough.",
-        strict=True,
-    )
-    def test_cli_factory_create_vault_fails(self, test_account, ape_provider):
-        """CLI's factory.createCollateralVault() fails — stale ABI."""
+    def test_cli_factory_create_vault_execution(self, test_account, ape_provider):
+        """Direct factory.createCollateralVault() via Ape succeeds on Anvil.
+
+        On Anvil, test accounts are auto-impersonated which satisfies the
+        callThroughEVC modifier. This verifies the v2 ABI works end-to-end.
+        """
         factory = collateral_vault_factory()
         receipt = factory.createCollateralVault(
-            BEACON_EULER_EWETH, 0, sender=test_account
+            0, EULER_EWETH, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, EULER_EWETH_IV,
+            sender=test_account,
         )
         assert receipt.status == 1
 
-    @pytest.mark.xfail(
-        reason="BUG: CLI factory simulation fails — stale v1 ABI.",
-        strict=True,
-    )
-    def test_cli_factory_simulation_fails(self, test_account, ape_provider):
-        """simulate_tx with CLI factory fails — stale ABI."""
+    def test_cli_factory_simulation_succeeds(self, test_account, ape_provider):
+        """simulate_tx with v2 ABI succeeds (eth_call bypasses callThroughEVC)."""
         factory = collateral_vault_factory()
         sim = simulate_tx(
-            factory, "createCollateralVault", [BEACON_EULER_EWETH, 0],
+            factory, "createCollateralVault",
+            [0, EULER_EWETH, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, EULER_EWETH_IV],
             sender=test_account,
         )
         assert sim["success"] is True
+        assert sim["result"]  # Returns predicted vault address
 
 
 # --------------------------------------------------------------------------- #

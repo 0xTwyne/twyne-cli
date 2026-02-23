@@ -850,29 +850,44 @@ def factory():
 
 
 @factory.command(name="create-vault")
-@click.argument("beacon_address")
-@click.option("--salt", type=int, default=0, help="Salt for deterministic vault address (default: 0)")
+@click.argument("asset_address")
+@click.argument("target_vault_address")
+@click.option("--vault-type", type=int, default=0, help="Vault type: 0=Euler, 1=Aave (default: 0)")
+@click.option("--ltv", type=int, default=8500, help="Liquidation LTV in basis points (default: 8500 = 85%)")
+@click.option("--target-asset", default=None, help="Debt token address (required for Aave, ignored for Euler)")
 @tx_options
 @pass_ctx
-def create_vault(ctx: TwyneContext, beacon_address, salt, account_alias, private_key, dry_run, skip_confirm, **_):
+def create_vault(ctx: TwyneContext, asset_address, target_vault_address, vault_type, ltv, target_asset,
+                 account_alias, private_key, dry_run, skip_confirm, **_):
     """Create a new collateral vault via the factory.
 
-    BEACON_ADDRESS: The beacon proxy address for the target vault type.
+    ASSET_ADDRESS: Collateral token address (e.g., eWETH).
+
+    TARGET_VAULT_ADDRESS: External lending vault (Euler eVault or Aave pool).
     """
+    from ..constants import ZERO_ADDRESS
+
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key)
         fct = collateral_vault_factory()
+        target_asset = target_asset or ZERO_ADDRESS
 
-        sim = simulate_tx(fct, "createCollateralVault", [beacon_address, salt], sender=account)
+        args = [vault_type, asset_address, target_vault_address, ltv, target_asset]
+
+        sim = simulate_tx(fct, "createCollateralVault", args, sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
             raise SystemExit(1)
 
+        vault_type_name = "Euler" if vault_type == 0 else "Aave"
         details = [
             ("Factory", str(fct.address)),
-            ("Beacon", beacon_address),
-            ("Salt", str(salt)),
+            ("Vault Type", vault_type_name),
+            ("Asset", asset_address),
+            ("Target Vault", target_vault_address),
+            ("Liq LTV", f"{ltv} bp ({ltv/100:.1f}%)"),
+            ("Target Asset", target_asset),
             ("Sender", str(account.address)),
         ]
 
@@ -882,11 +897,11 @@ def create_vault(ctx: TwyneContext, beacon_address, salt, account_alias, private
                 click.echo(f"Predicted vault address: {sim['result']}")
             return
 
-        if not confirm_prompt(f"Create collateral vault (beacon: {format_address(beacon_address)})", details, skip_confirm):
+        if not confirm_prompt(f"Create {vault_type_name} collateral vault", details, skip_confirm):
             click.echo("Cancelled.")
             return
 
-        receipt = fct.createCollateralVault(beacon_address, salt, sender=account)
+        receipt = fct.createCollateralVault(*args, sender=account)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
