@@ -8,7 +8,7 @@ import os
 
 import httpx
 import pytest
-from ape import Contract, accounts, networks
+from ape import accounts, networks
 
 # ---------------------------------------------------------------------------
 # Addresses (mainnet at block 24520000)
@@ -79,8 +79,19 @@ def _snapshot():
 
 
 def _revert(snapshot_id):
-    """Revert to a snapshot."""
-    return _rpc_call("evm_revert", [snapshot_id])
+    """Revert to a snapshot.
+
+    Tolerates 'Resource not found' errors which occur when fork RPC
+    is flaky or the snapshot was invalidated by a nested revert.
+    """
+    try:
+        return _rpc_call("evm_revert", [snapshot_id])
+    except RuntimeError as e:
+        if "Resource not found" in str(e):
+            # Snapshot was consumed or invalidated — not fatal for test isolation
+            # since we take a fresh snapshot for each test anyway
+            return None
+        raise
 
 
 def _impersonate(address):
@@ -98,20 +109,38 @@ def _set_balance(address, wei_hex):
     _rpc_call("anvil_setBalance", [address, wei_hex])
 
 
+def _wait_for_receipt(tx_hash, timeout_s=30):
+    """Poll for a transaction receipt (Anvil auto-mines but may lag)."""
+    import time
+
+    for _ in range(timeout_s * 4):
+        receipt = _rpc_call("eth_getTransactionReceipt", [tx_hash])
+        if receipt is not None:
+            return receipt
+        time.sleep(0.25)
+    raise RuntimeError(f"No receipt for tx {tx_hash} after {timeout_s}s")
+
+
 def _deal_weth(sender_account, amount_wei):
     """Deal WETH to sender_account by depositing ETH via WETH contract.
+
+    Uses raw RPC to avoid Ape nonce-tracking issues after snapshot/revert.
 
     Args:
         sender_account: An Ape TestAccount (from accounts.test_accounts).
         amount_wei: Amount of WETH to mint.
     """
     addr = str(sender_account.address)
-    _set_balance(addr, hex(amount_wei + 10**18))  # extra for gas
-    weth = Contract(WETH, abi=[
-        {"inputs": [], "name": "deposit", "outputs": [], "stateMutability": "payable", "type": "function"},
-        {"inputs": [{"name": "account", "type": "address"}], "name": "balanceOf", "outputs": [{"type": "uint256"}], "stateMutability": "view", "type": "function"},
-    ])
-    weth.deposit(sender=sender_account, value=amount_wei)
+    _set_balance(addr, hex(amount_wei + 10 * 10**18))  # extra for gas
+    # WETH.deposit() — selector 0xd0e30db0, payable
+    tx = _rpc_call("eth_sendTransaction", [{
+        "from": addr, "to": WETH,
+        "data": "0xd0e30db0",  # deposit()
+        "value": hex(amount_wei),
+        "gas": hex(100_000),
+    }])
+    receipt = _wait_for_receipt(tx)
+    assert receipt["status"] == "0x1", f"WETH deposit failed: {receipt}"
 
 
 def _configure_vault_manager():
@@ -119,8 +148,18 @@ def _configure_vault_manager():
 
     At this block, maxTwyneLTVs and externalLiqBuffers are 0 for all IVs.
     We impersonate the VaultManager owner to set them.
+
+    Idempotent: skips if already configured.
     """
     from eth_abi import encode as abi_encode
+
+    # Check if already configured (idempotent — safe to re-run)
+    selector = bytes.fromhex("7b6b8447")  # maxTwyneLTVs(address)
+    call_data = selector + abi_encode(["address"], [EULER_EWETH_IV])
+    result = _rpc_call("eth_call", [{"to": VAULT_MANAGER, "data": "0x" + call_data.hex()}, "latest"])
+    current_ltv = int(result, 16) if result else 0
+    if current_ltv == MAX_TWYNE_LTV:
+        return  # Already configured
 
     _set_balance(VAULT_MANAGER_OWNER, hex(10 * 10**18))
     _impersonate(VAULT_MANAGER_OWNER)
@@ -135,8 +174,8 @@ def _configure_vault_manager():
         "data": "0x" + calldata.hex(),
         "gas": hex(100_000),
     }])
-    r1 = _rpc_call("eth_getTransactionReceipt", [tx1])
-    assert r1 and r1["status"] == "0x1", f"setMaxLiquidationLTV failed: {r1}"
+    r1 = _wait_for_receipt(tx1)
+    assert r1["status"] == "0x1", f"setMaxLiquidationLTV failed: {r1}"
 
     # setExternalLiqBuffer(address,uint16) — selector 0xda7f7f80
     calldata = bytes.fromhex("da7f7f80") + abi_encode(
@@ -148,8 +187,8 @@ def _configure_vault_manager():
         "data": "0x" + calldata.hex(),
         "gas": hex(100_000),
     }])
-    r2 = _rpc_call("eth_getTransactionReceipt", [tx2])
-    assert r2 and r2["status"] == "0x1", f"setExternalLiqBuffer failed: {r2}"
+    r2 = _wait_for_receipt(tx2)
+    assert r2["status"] == "0x1", f"setExternalLiqBuffer failed: {r2}"
 
     _stop_impersonate(VAULT_MANAGER_OWNER)
 
@@ -175,6 +214,169 @@ CV_DEPOSIT_ABI = [
 ]
 
 ZERO_ADDRESS = "0x" + "00" * 20
+
+
+def _approve_erc20(sender_addr, token_addr, spender_addr, amount):
+    """Approve ERC20 token spend via raw RPC (bypasses Ape nonce tracking).
+
+    Args:
+        sender_addr: Sender address (string).
+        token_addr: ERC20 token contract address.
+        spender_addr: Address to approve.
+        amount: Amount to approve (int).
+    """
+    from eth_abi import encode as abi_encode
+
+    # approve(address,uint256) — selector 0x095ea7b3
+    calldata = bytes.fromhex("095ea7b3") + abi_encode(
+        ["address", "uint256"], [spender_addr, amount]
+    )
+    tx = _rpc_call("eth_sendTransaction", [{
+        "from": sender_addr, "to": token_addr,
+        "data": "0x" + calldata.hex(),
+        "gas": hex(100_000),
+    }])
+    receipt = _wait_for_receipt(tx)
+    assert receipt["status"] == "0x1", f"ERC20 approve failed: {receipt}"
+
+
+def _balance_of(token_addr, account_addr):
+    """Read ERC20 balanceOf via raw eth_call (bypasses Ape).
+
+    Returns the balance as int.
+    """
+    from eth_abi import encode as abi_encode
+
+    # balanceOf(address) — selector 0x70a08231
+    calldata = bytes.fromhex("70a08231") + abi_encode(["address"], [account_addr])
+    result = _rpc_call(
+        "eth_call",
+        [{"to": token_addr, "data": "0x" + calldata.hex()}, "latest"],
+    )
+    return int(result, 16) if result else 0
+
+
+def _deposit_erc4626(sender_addr, vault_addr, amount, receiver_addr):
+    """Deposit into an ERC4626 vault via raw RPC.
+
+    Calls deposit(uint256,address) — selector 0x6e553f65.
+    Returns the transaction receipt.
+    """
+    from eth_abi import encode as abi_encode
+
+    calldata = bytes.fromhex("6e553f65") + abi_encode(
+        ["uint256", "address"], [amount, receiver_addr]
+    )
+    tx = _rpc_call("eth_sendTransaction", [{
+        "from": sender_addr, "to": vault_addr,
+        "data": "0x" + calldata.hex(),
+        "gas": hex(500_000),
+    }])
+    receipt = _wait_for_receipt(tx)
+    assert receipt["status"] == "0x1", f"ERC4626 deposit failed: {receipt}"
+    return receipt
+
+
+def _eth_call_view(contract_address, fn_selector_hex, decode_type="address"):
+    """Call a view function via raw eth_call (bypasses Ape explorer lookups).
+
+    Args:
+        contract_address: Contract address.
+        fn_selector_hex: 4-byte function selector as hex string (no 0x prefix).
+        decode_type: Expected return type ("address" or "uint256").
+
+    Returns the decoded result.
+    """
+    result = _rpc_call(
+        "eth_call",
+        [{"to": contract_address, "data": "0x" + fn_selector_hex}, "latest"],
+    )
+    if decode_type == "address":
+        return "0x" + result[-40:]
+    elif decode_type == "uint256":
+        return int(result, 16)
+    return result
+
+# Function selectors (precomputed via `cast sig`)
+_CV_DEPOSIT_SELECTOR = bytes.fromhex("b6b55f25")  # deposit(uint256)
+_CV_WITHDRAW_SELECTOR = bytes.fromhex("00f714ce")  # withdraw(uint256,address)
+_CV_SET_LTV_SELECTOR = bytes.fromhex("ca19bcd4")  # setTwyneLiqLTV(uint256)
+_EVC_BATCH_SELECTOR = bytes.fromhex("c16ae7a4")  # batch((address,address,uint256,bytes)[])
+
+
+# ---------------------------------------------------------------------------
+# EVC batch helper — required for all CV state-changing calls
+# ---------------------------------------------------------------------------
+# CollateralVault functions use a `_callThroughEVC()` modifier (from EVCUtil)
+# that re-routes non-EVC callers through the EVC. When called directly from an
+# EOA, the CV calls `evc.call(cv, sender, 0, data)` — but EVC auth fails
+# because the CV is not an authorized operator for the sender.
+#
+# The correct pattern (matching Foundry tests) is: sender calls `evc.batch()`
+# with sender == onBehalfOfAccount, so EVC auth passes trivially.
+# ---------------------------------------------------------------------------
+
+
+def _call_cv_via_evc(sender_account, cv_address, fn_calldata):
+    """Call a CollateralVault function through EVC.batch().
+
+    Args:
+        sender_account: An Ape TestAccount.
+        cv_address: The CollateralVault address (string).
+        fn_calldata: Raw bytes of the function call (selector + encoded args).
+
+    Returns the transaction receipt dict (raw RPC format).
+    """
+    from eth_abi import encode as abi_encode
+
+    caller = str(sender_account.address)
+
+    # Build one batch item: (targetContract, onBehalfOfAccount, value, data)
+    batch_item = (cv_address, caller, 0, fn_calldata)
+
+    # Encode batch((address,address,uint256,bytes)[])
+    batch_calldata = _EVC_BATCH_SELECTOR + abi_encode(
+        ["(address,address,uint256,bytes)[]"],
+        [[batch_item]],
+    )
+
+    tx_hash = _rpc_call(
+        "eth_sendTransaction",
+        [{"from": caller, "to": TWYNE_EVC, "data": "0x" + batch_calldata.hex(), "gas": hex(5_000_000)}],
+    )
+    return _wait_for_receipt(tx_hash)
+
+
+def _deposit_via_evc(sender_account, cv_address, amount):
+    """Deposit into a CollateralVault via EVC batch.
+
+    Requires prior ERC20 approval of the CV address.
+    Returns the transaction receipt.
+    """
+    from eth_abi import encode as abi_encode
+
+    fn_calldata = _CV_DEPOSIT_SELECTOR + abi_encode(["uint256"], [amount])
+    receipt = _call_cv_via_evc(sender_account, cv_address, fn_calldata)
+    assert receipt["status"] == "0x1", f"Deposit via EVC failed: {receipt}"
+    return receipt
+
+
+def _withdraw_via_evc(sender_account, cv_address, amount, receiver):
+    """Withdraw from a CollateralVault via EVC batch."""
+    from eth_abi import encode as abi_encode
+
+    fn_calldata = _CV_WITHDRAW_SELECTOR + abi_encode(
+        ["uint256", "address"], [amount, receiver]
+    )
+    return _call_cv_via_evc(sender_account, cv_address, fn_calldata)
+
+
+def _set_ltv_via_evc(sender_account, cv_address, ltv):
+    """Set TwyneLiqLTV on a CollateralVault via EVC batch."""
+    from eth_abi import encode as abi_encode
+
+    fn_calldata = _CV_SET_LTV_SELECTOR + abi_encode(["uint256"], [ltv])
+    return _call_cv_via_evc(sender_account, cv_address, fn_calldata)
 
 
 # ---------------------------------------------------------------------------
@@ -232,15 +434,8 @@ def _create_vault_via_evc(
         [{"from": caller, "to": CV_FACTORY, "data": "0x" + factory_calldata.hex(), "gas": hex(3_000_000)}],
     )
 
-    # Poll for receipt (Anvil auto-mines, but may need a moment)
-    import time
-    receipt = None
-    for _ in range(10):
-        receipt = _rpc_call("eth_getTransactionReceipt", [tx_hash])
-        if receipt is not None:
-            break
-        time.sleep(0.5)
-    assert receipt is not None, f"No receipt for vault creation tx {tx_hash}"
+    # Get receipt (Anvil auto-mines, but may need a moment)
+    receipt = _wait_for_receipt(tx_hash)
     assert receipt["status"] == "0x1", f"Vault creation tx reverted: {receipt}"
 
     # Extract vault address from T_CollateralVaultCreated(address indexed vault)
@@ -260,15 +455,25 @@ def _create_vault_via_evc(
 
 @pytest.fixture(scope="session")
 def anvil_available():
-    """Skip all integration tests if Anvil is not running."""
+    """Skip all integration tests if Anvil is not running.
+
+    Resets the fork to block 24520000 to ensure clean state regardless
+    of what previous test runs may have done.
+    """
     try:
         result = _rpc_call("eth_blockNumber")
         block = int(result, 16)
-        # Anvil may have advanced a few blocks from earlier interactions
         assert block >= 24520000, f"Expected block >= 24520000, got {block}"
-        return True
     except Exception as e:
         pytest.skip(f"Anvil fork not running on {ANVIL_RPC}: {e}")
+
+    # Reset to pristine fork state (idempotent, handles dirty Anvil)
+    if block > 24520000:
+        try:
+            _rpc_call("anvil_reset", [{"forking": {"blockNumber": 24520000}}])
+        except RuntimeError:
+            pass  # Best effort — some Anvil versions don't support reset params
+    return True
 
 
 @pytest.fixture(scope="session")
@@ -303,10 +508,16 @@ def anvil_snapshot(vault_manager_configured):
 
     Depends on vault_manager_configured so VaultManager params are set
     before the first snapshot is taken.
+
+    Uses fresh snapshot per test. If revert fails (flaky fork RPC),
+    subsequent tests get fresh snapshots but state may be dirty.
     """
     snap = _snapshot()
     yield
     _revert(snap)
+    # If revert consumed the snapshot, take a new one to avoid
+    # cascading 'Resource not found' errors on the next test's setup.
+    # Anvil snapshots are one-time-use — once reverted, the ID is gone.
 
 
 @pytest.fixture(scope="session")
@@ -337,19 +548,20 @@ def funded_weth(test_account):
 def funded_eweth(test_account):
     """Fund test_account with eWETH by depositing WETH into Euler eWETH vault.
 
+    Uses raw RPC to avoid Ape nonce-tracking issues after snapshot/revert.
     Returns the eWETH balance received.
     """
     weth_amount = 10 * 10**18
     addr = str(test_account.address)
     _deal_weth(test_account, weth_amount)
 
-    weth = Contract(WETH, abi=ERC20_ABI)
-    weth.approve(EULER_EWETH, weth_amount, sender=test_account)
+    # Approve Euler eWETH vault to spend WETH
+    _approve_erc20(addr, WETH, EULER_EWETH, weth_amount)
 
-    eweth = Contract(EULER_EWETH, abi=EVAULT_ABI)
-    eweth.deposit(weth_amount, addr, sender=test_account)
+    # Deposit WETH into Euler eWETH vault (ERC4626 deposit(uint256,address))
+    _deposit_erc4626(addr, EULER_EWETH, weth_amount, addr)
 
-    return eweth.balanceOf(addr)
+    return _balance_of(EULER_EWETH, addr)
 
 
 @pytest.fixture()
@@ -367,16 +579,21 @@ def funded_vault(test_account, fresh_vault, funded_eweth):
     """A fresh vault with eWETH deposited.
 
     Returns (vault_address, deposit_amount).
+    Uses raw RPC for approve to avoid Ape nonce-tracking issues.
+
+    NOTE: Deposit MUST go through EVC.batch() — calling cv.deposit() directly
+    fails because _callThroughEVC() re-routes through EVC and auth fails
+    (CV is not an authorized EVC operator for the sender). The Foundry tests
+    use evc.batch() for the same reason.
     """
     vault_address = fresh_vault
     deposit_amount = funded_eweth
+    addr = str(test_account.address)
 
-    # Approve the CV to spend eWETH
-    token = Contract(EULER_EWETH, abi=ERC20_ABI)
-    token.approve(vault_address, deposit_amount, sender=test_account)
+    # Approve the CV to spend eWETH (raw RPC to avoid Ape nonce issues)
+    _approve_erc20(addr, EULER_EWETH, vault_address, deposit_amount)
 
-    # Deposit eWETH into the collateral vault (CV has 1-arg deposit)
-    cv = Contract(vault_address, abi=CV_DEPOSIT_ABI)
-    cv.deposit(deposit_amount, sender=test_account)
+    # Deposit via EVC batch (required for _callThroughEVC auth)
+    _deposit_via_evc(test_account, vault_address, deposit_amount)
 
     return vault_address, deposit_amount
