@@ -53,6 +53,12 @@ class TestCreditDepositEuler:
         # The wrapper returns shares received (uint256 > 0)
         assert result["result"] > 0
 
+    @pytest.mark.xfail(
+        reason="BUG: simulate_tx (eth_call) returns success for wrapper deposit even "
+        "without WETH approval. This is consistent with the broader simulate_tx bug "
+        "where eth_call doesn't enforce token approvals for EVC-routed operations.",
+        strict=True,
+    )
     def test_simulate_deposit_fails_without_approval(self, test_account, funded_weth):
         """Simulation fails when wrapper has no WETH allowance."""
         wrapper = euler_wrapper()
