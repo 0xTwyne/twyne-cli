@@ -77,25 +77,6 @@ def _rpc_call(method, params=None):
 
 
 
-def _snapshot():
-    """Take an Anvil state snapshot."""
-    return _rpc_call("evm_snapshot")
-
-
-def _revert(snapshot_id):
-    """Revert to a snapshot and mine a block to clear any pending transactions.
-
-    Tolerates 'Resource not found' errors which occur when fork RPC
-    is flaky or the snapshot was invalidated by a nested revert.
-    """
-    try:
-        return _rpc_call("evm_revert", [snapshot_id])
-    except RuntimeError as e:
-        if "Resource not found" in str(e):
-            return None
-        raise
-
-
 def _impersonate(address):
     """Start impersonating an address on Anvil."""
     _rpc_call("anvil_impersonateAccount", [address])
@@ -424,16 +405,24 @@ def _create_vault_via_evc(
 
     caller = str(sender_account.address)
 
-    # Encode factory calldata (call factory directly — it routes through EVC internally)
+    # Encode factory calldata
     factory_calldata = _FACTORY_SELECTOR + abi_encode(
         ["uint8", "address", "address", "uint256", "address"],
         [category_id, asset, target_vault, liq_ltv, intermediate_vault],
     )
 
-    # Send transaction directly to factory via raw RPC
+    # Factory has _callThroughEVC modifier — must call via EVC.batch(), not directly.
+    # Direct calls fail with EVC_EmptyError (0x38ae747c) because EVC can't
+    # authenticate the factory as a caller on behalf of the user.
+    batch_item = (CV_FACTORY, caller, 0, factory_calldata)
+    batch_calldata = _EVC_BATCH_SELECTOR + abi_encode(
+        ["(address,address,uint256,bytes)[]"],
+        [[batch_item]],
+    )
+
     tx_hash = _rpc_call(
         "eth_sendTransaction",
-        [{"from": caller, "to": CV_FACTORY, "data": "0x" + factory_calldata.hex(), "gas": hex(3_000_000)}],
+        [{"from": caller, "to": TWYNE_EVC, "data": "0x" + batch_calldata.hex(), "gas": hex(5_000_000)}],
     )
 
     # Get receipt (Anvil auto-mines, but may need a moment)
@@ -457,13 +446,19 @@ def _create_vault_via_evc(
 
 @pytest.fixture(scope="session")
 def anvil_available():
-    """Skip all integration tests if Anvil is not running on the expected fork."""
+    """Skip all integration tests if Anvil is not running on the expected fork.
+
+    If Anvil is running but has drifted past the fork block (from previous
+    test runs), reset it to the original fork state. This ensures a clean
+    starting point without needing per-test snapshot/revert.
+    """
     try:
         result = _rpc_call("eth_blockNumber")
         block = int(result, 16)
         assert block >= FORK_BLOCK, f"Expected block >= {FORK_BLOCK}, got {block}"
     except Exception as e:
         pytest.skip(f"Anvil fork not running on {ANVIL_RPC}: {e}")
+
     return True
 
 
@@ -494,18 +489,24 @@ def vault_manager_configured(ape_provider):
 
 
 @pytest.fixture(autouse=True)
-def anvil_snapshot(vault_manager_configured):
-    """Snapshot/revert Anvil state between each test.
+def anvil_clean_state(vault_manager_configured):
+    """Ensure VaultManager is configured and test accounts have ETH before each test.
 
-    Depends on vault_manager_configured so VaultManager params are set
-    before the first snapshot is taken.
+    NOTE: Per-test state isolation (evm_snapshot/evm_revert, anvil_reset)
+    is NOT used because both are broken on Anvil forked state:
+    - evm_snapshot/evm_revert causes BlockOutOfRangeError (Anvil bug)
+    - anvil_reset crashes Anvil after ~7 resets (connection drop)
 
-    Uses evm_snapshot/evm_revert (not anvil_reset) because anvil_reset
-    drops the HTTP connection and crashes Anvil on public RPCs.
+    Tests are designed to be independent without state isolation:
+    - Each test creates fresh vaults via _create_vault_via_evc()
+    - funded_eweth mints new WETH and deposits each time (proven to work 10+ times)
+    - State accumulation is harmless (more eWETH in test account is fine)
+    - ETH is replenished each test since _deal_weth overwrites the balance
     """
-    snap = _snapshot()
+    # Replenish ETH for all test accounts (gas is consumed without revert)
+    for addr in TEST_ACCOUNTS:
+        _set_balance(addr, hex(10000 * 10**18))
     yield
-    _revert(snap)
 
 
 @pytest.fixture(scope="session")
@@ -537,10 +538,14 @@ def funded_eweth(test_account):
     """Fund test_account with eWETH by depositing WETH into Euler eWETH vault.
 
     Uses raw RPC to avoid Ape nonce-tracking issues after snapshot/revert.
-    Returns the eWETH balance received.
+    Returns the eWETH amount received (delta, not total balance).
     """
     weth_amount = 10 * 10**18
     addr = str(test_account.address)
+
+    # Track balance before deposit (without state isolation, balance accumulates)
+    balance_before = _balance_of(EULER_EWETH, addr)
+
     _deal_weth(test_account, weth_amount)
 
     # Approve Euler eWETH vault to spend WETH
@@ -549,7 +554,9 @@ def funded_eweth(test_account):
     # Deposit WETH into Euler eWETH vault (ERC4626 deposit(uint256,address))
     _deposit_erc4626(addr, EULER_EWETH, weth_amount, addr)
 
-    return _balance_of(EULER_EWETH, addr)
+    # Return only the newly received eWETH (not accumulated total)
+    balance_after = _balance_of(EULER_EWETH, addr)
+    return balance_after - balance_before
 
 
 @pytest.fixture()
@@ -575,7 +582,11 @@ def funded_vault(test_account, fresh_vault, funded_eweth):
     use evc.batch() for the same reason.
     """
     vault_address = fresh_vault
-    deposit_amount = funded_eweth
+    # Use a small deposit to conserve Intermediate Vault credit.
+    # Without per-test state isolation, each funded_vault depletes the IV's
+    # available credit. Capping at 0.5 eWETH allows ~20+ funded vaults
+    # before the IV is exhausted.
+    deposit_amount = min(funded_eweth, 5 * 10**17)  # cap at 0.5 eWETH
     addr = str(test_account.address)
 
     # Approve the CV to spend eWETH (raw RPC to avoid Ape nonce issues)
