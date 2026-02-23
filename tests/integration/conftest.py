@@ -176,6 +176,54 @@ def _configure_vault_manager():
     _stop_impersonate(VAULT_MANAGER_OWNER)
 
 
+def _increase_iv_supply_cap():
+    """Increase the IV supply cap to avoid E_SupplyCapExceeded in tests.
+
+    The Euler eWETH IV has a supply cap of ~7 eWETH at block 24520000.
+    Without per-test state isolation, accumulated test deposits exhaust this.
+    We impersonate the IV governor (VaultManager) and call setCaps() to
+    raise the supply cap to 100 eWETH.
+
+    Idempotent: skips if already increased.
+
+    AmountCap encoding (Euler EVK):
+        raw uint16 → 10^(raw & 63) * (raw >> 6) / 100
+        6420 → 10^20 * 100 / 100 = 10^20 = 100 eWETH
+    """
+    from eth_abi import encode as abi_encode
+
+    IV_SUPPLY_CAP_RAW = 6420  # 100 eWETH
+
+    # Check current cap (idempotent)
+    import subprocess
+    r = subprocess.run(
+        ["/home/node/.config/.foundry/bin/cast", "call", "--rpc-url", ANVIL_RPC,
+         EULER_EWETH_IV, "caps()(uint16,uint16)"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if str(IV_SUPPLY_CAP_RAW) in r.stdout:
+        return  # Already set
+
+    # Governor of the IV is the VaultManager
+    _set_balance(VAULT_MANAGER, hex(10 * 10**18))
+    _impersonate(VAULT_MANAGER)
+
+    # setCaps(uint16,uint16) — selector 0xd87f780f
+    selector = bytes.fromhex("d87f780f")
+    calldata = selector + abi_encode(
+        ["uint16", "uint16"], [IV_SUPPLY_CAP_RAW, 44818]  # keep borrow cap
+    )
+    tx = _rpc_call("eth_sendTransaction", [{
+        "from": VAULT_MANAGER, "to": EULER_EWETH_IV,
+        "data": "0x" + calldata.hex(),
+        "gas": hex(500_000),
+    }])
+    receipt = _wait_for_receipt(tx)
+    assert receipt["status"] == "0x1", f"setCaps failed: {receipt}"
+
+    _stop_impersonate(VAULT_MANAGER)
+
+
 ERC20_ABI = [
     {"inputs": [{"name": "spender", "type": "address"}, {"name": "amount", "type": "uint256"}], "name": "approve", "outputs": [{"type": "bool"}], "stateMutability": "nonpayable", "type": "function"},
     {"inputs": [{"name": "account", "type": "address"}], "name": "balanceOf", "outputs": [{"type": "uint256"}], "stateMutability": "view", "type": "function"},
@@ -479,12 +527,16 @@ def ape_provider(anvil_available):
 
 @pytest.fixture(scope="session")
 def vault_manager_configured(ape_provider):
-    """Configure VaultManager LTV params needed for vault creation.
+    """Configure VaultManager LTV params and IV supply cap.
 
     At block 24520000, maxTwyneLTVs and externalLiqBuffers are 0 for all IVs.
-    This fixture impersonates the VaultManager owner and sets them once per session.
+    The IV supply cap is ~7 eWETH which gets exhausted by accumulated test deposits
+    (no per-test state isolation). This fixture:
+    1. Sets VaultManager LTV params (impersonates VaultManager owner)
+    2. Increases IV supply cap to 100 eWETH (impersonates IV governor)
     """
     _configure_vault_manager()
+    _increase_iv_supply_cap()
     return True
 
 
@@ -596,3 +648,71 @@ def funded_vault(test_account, fresh_vault, funded_eweth):
     _deposit_via_evc(test_account, vault_address, deposit_amount)
 
     return vault_address, deposit_amount
+
+
+def _deposit_eweth_to_iv(sender_account, weth_amount=5 * 10**18):
+    """Deposit eWETH into the Euler Intermediate Vault (CreditEVault).
+
+    Bypasses the Euler wrapper (which reverts with 0x426073f2 at block 24520000).
+    Mints fresh WETH, deposits to Euler eWETH vault to get eWETH, then deposits
+    eWETH directly into the IV.
+
+    Matches the Foundry test pattern from EulerTestBase.t.sol:
+      1. dealEToken(collateralAssets, bob, amount) — WETH→eWETH via direct call
+      2. IERC20(eWETH).approve(intermediate_vault, amount)
+      3. intermediate_vault.deposit(amount, bob) — direct call
+
+    In Foundry, vm.startPrank(bob) satisfies EVault's callThroughEVC modifier.
+    On Anvil, impersonated accounts (--unlocked) get the same treatment —
+    the EVC sees the caller as authenticated.
+
+    Only deposits the freshly minted eWETH (not accumulated balance).
+    Returns the IV shares received (int).
+    """
+    from eth_abi import encode as abi_encode
+
+    addr = str(sender_account.address)
+
+    # Track eWETH balance before to only deposit fresh amount
+    eweth_before = _balance_of(EULER_EWETH, addr)
+
+    # 1. Get eWETH by depositing WETH into Euler eWETH vault (direct call)
+    _deal_weth(sender_account, weth_amount)
+    _approve_erc20(addr, WETH, EULER_EWETH, weth_amount)
+    _deposit_erc4626(addr, EULER_EWETH, weth_amount, addr)
+
+    eweth_after = _balance_of(EULER_EWETH, addr)
+    fresh_eweth = eweth_after - eweth_before
+    assert fresh_eweth > 0, "Failed to get eWETH"
+
+    # 2. Approve IV to spend fresh eWETH
+    _approve_erc20(addr, EULER_EWETH, EULER_EWETH_IV, fresh_eweth)
+
+    # 3. Deposit eWETH into IV — direct call with high gas limit
+    #    EVault.deposit has callThroughEVC, but on Anvil the modifier
+    #    re-routes through EVC which authenticates the impersonated sender.
+    #    Using eth_sendTransaction with sufficient gas (500k was too low,
+    #    cast send shows ~235k gas used but needs higher limit for EVC routing).
+    calldata = bytes.fromhex("6e553f65") + abi_encode(
+        ["uint256", "address"], [fresh_eweth, addr]
+    )
+    tx_hash = _rpc_call("eth_sendTransaction", [{
+        "from": addr, "to": EULER_EWETH_IV,
+        "data": "0x" + calldata.hex(),
+        "gas": hex(1_000_000),
+    }])
+    receipt = _wait_for_receipt(tx_hash)
+    assert receipt["status"] == "0x1", f"IV deposit failed: {receipt}"
+
+    iv_shares = _balance_of(EULER_EWETH_IV, addr)
+    assert iv_shares > 0, "IV deposit returned 0 shares"
+    return iv_shares
+
+
+@pytest.fixture()
+def funded_iv(test_account):
+    """Fund test_account with IV shares by depositing eWETH directly.
+
+    Bypasses the Euler wrapper. Returns the IV shares received (int).
+    """
+    return _deposit_eweth_to_iv(test_account)
