@@ -1,0 +1,48 @@
+[
+  {
+    "type": "function",
+    "name": "executeDeleverage",
+    "inputs": [
+      {
+        "name": "collateralVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "flashloanAmount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxDebt",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "withdrawCollateralAmount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "swapData",
+        "type": "bytes[]",
+        "internalType": "bytes[]"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "EVC",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  }
+]
