@@ -1,6 +1,7 @@
 """Test configuration for twyne-cli."""
 
 import os
+
 import pytest
 
 

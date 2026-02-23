@@ -2,9 +2,8 @@
 
 import json
 
-import pytest
+import pytest  # noqa: F401
 import yaml
-
 
 SAMPLE_BATCH = {
     "evc": "0xef39D6493884C4C84D38a4bFF879Ce16CEdE702a",

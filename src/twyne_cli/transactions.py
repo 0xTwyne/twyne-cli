@@ -1,7 +1,6 @@
 """Shared transaction helpers — account resolution, simulation, submission."""
 
 import os
-import sys
 
 import click
 from ape.exceptions import ContractLogicError

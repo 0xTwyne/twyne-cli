@@ -5,7 +5,6 @@ Start Anvil first:
 """
 
 import pytest
-from click.testing import CliRunner
 
 
 @pytest.mark.integration

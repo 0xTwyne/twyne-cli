@@ -1,7 +1,8 @@
 """Tests for 1inch swap integration."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 def test_swap_client_init():

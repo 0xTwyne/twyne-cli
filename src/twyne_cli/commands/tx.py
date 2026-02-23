@@ -2,24 +2,25 @@
 
 import click
 
+from ..batch import build_batch_items, parse_batch_file
+from ..constants import DEFAULT_SLIPPAGE
 from ..context import TwyneContext, pass_ctx
 from ..contracts import (
+    aave_atoken_wrapper,
+    aave_wrapper,
     collateral_vault,
     collateral_vault_factory,
-    erc20,
-    evc as evc_contract,
-    euler_wrapper,
-    aave_wrapper,
-    aave_atoken_wrapper,
-    leverage_operator,
     deleverage_operator,
-    teleport_operator,
+    erc20,
+    euler_wrapper,
     get_address,
+    leverage_operator,
+    teleport_operator,
+)
+from ..contracts import (
+    evc as evc_contract,
 )
 from ..formatting import format_address
-from ..swap import SwapClient
-from ..constants import DEFAULT_SLIPPAGE
-from ..batch import parse_batch_file, build_batch_items
 from ..transactions import (
     confirm_prompt,
     display_receipt,
@@ -27,7 +28,6 @@ from ..transactions import (
     resolve_account,
     simulate_tx,
 )
-
 
 # --------------------------------------------------------------------------- #
 # Shared options for all tx commands
@@ -435,14 +435,14 @@ def credit():
     pass
 
 
-@credit.command()
+@credit.command(name="deposit")
 @click.argument("iv_address")
 @click.argument("amount")
 @click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
               help="Which wrapper to use (euler or aave)")
 @tx_options
 @pass_ctx
-def deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, dry_run, skip_confirm, raw):
+def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, dry_run, skip_confirm, raw):
     """Deposit underlying asset into an intermediate vault via wrapper."""
     ctx.connect()
     try:
@@ -683,11 +683,6 @@ def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage, api_k
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
 
-        # Get swap data from 1inch
-        swap_client = SwapClient(api_key)
-        asset_addr = cv.asset(block_identifier=None)
-
-        # For leverage: borrow debt token, swap to collateral
         # The operator contract handles the flash loan + swap internally
         op = leverage_operator(protocol)
 
