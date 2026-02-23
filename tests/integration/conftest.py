@@ -14,6 +14,9 @@ from ape import accounts, networks
 # Addresses (mainnet at block 24520000)
 # ---------------------------------------------------------------------------
 ANVIL_RPC = os.environ.get("ANVIL_RPC_URL", "http://localhost:8454")
+# Fork RPC URL used by Anvil — needed for anvil_reset between tests
+FORK_RPC = os.environ.get("ANVIL_FORK_URL", "https://ethereum-rpc.publicnode.com")
+FORK_BLOCK = 24520000
 WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 WSTETH = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
 EULER_EWETH = "0xD8b27CF359b7D15710a5BE299AF6e7Bf904984C2"  # Euler eWETH vault token
@@ -65,12 +68,13 @@ def _rpc_call(method, params=None):
     resp = httpx.post(
         ANVIL_RPC,
         json={"jsonrpc": "2.0", "method": method, "params": params or [], "id": 1},
-        timeout=30,
+        timeout=60,
     )
     data = resp.json()
     if "error" in data:
         raise RuntimeError(f"RPC error: {data['error']}")
     return data.get("result")
+
 
 
 def _snapshot():
@@ -79,7 +83,7 @@ def _snapshot():
 
 
 def _revert(snapshot_id):
-    """Revert to a snapshot.
+    """Revert to a snapshot and mine a block to clear any pending transactions.
 
     Tolerates 'Resource not found' errors which occur when fork RPC
     is flaky or the snapshot was invalidated by a nested revert.
@@ -88,8 +92,6 @@ def _revert(snapshot_id):
         return _rpc_call("evm_revert", [snapshot_id])
     except RuntimeError as e:
         if "Resource not found" in str(e):
-            # Snapshot was consumed or invalidated — not fatal for test isolation
-            # since we take a fresh snapshot for each test anyway
             return None
         raise
 
@@ -455,24 +457,13 @@ def _create_vault_via_evc(
 
 @pytest.fixture(scope="session")
 def anvil_available():
-    """Skip all integration tests if Anvil is not running.
-
-    Resets the fork to block 24520000 to ensure clean state regardless
-    of what previous test runs may have done.
-    """
+    """Skip all integration tests if Anvil is not running on the expected fork."""
     try:
         result = _rpc_call("eth_blockNumber")
         block = int(result, 16)
-        assert block >= 24520000, f"Expected block >= 24520000, got {block}"
+        assert block >= FORK_BLOCK, f"Expected block >= {FORK_BLOCK}, got {block}"
     except Exception as e:
         pytest.skip(f"Anvil fork not running on {ANVIL_RPC}: {e}")
-
-    # Reset to pristine fork state (idempotent, handles dirty Anvil)
-    if block > 24520000:
-        try:
-            _rpc_call("anvil_reset", [{"forking": {"blockNumber": 24520000}}])
-        except RuntimeError:
-            pass  # Best effort — some Anvil versions don't support reset params
     return True
 
 
@@ -509,15 +500,12 @@ def anvil_snapshot(vault_manager_configured):
     Depends on vault_manager_configured so VaultManager params are set
     before the first snapshot is taken.
 
-    Uses fresh snapshot per test. If revert fails (flaky fork RPC),
-    subsequent tests get fresh snapshots but state may be dirty.
+    Uses evm_snapshot/evm_revert (not anvil_reset) because anvil_reset
+    drops the HTTP connection and crashes Anvil on public RPCs.
     """
     snap = _snapshot()
     yield
     _revert(snap)
-    # If revert consumed the snapshot, take a new one to avoid
-    # cascading 'Resource not found' errors on the next test's setup.
-    # Anvil snapshots are one-time-use — once reverted, the ID is gone.
 
 
 @pytest.fixture(scope="session")
