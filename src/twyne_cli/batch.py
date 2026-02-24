@@ -87,6 +87,9 @@ def _encode_collateral_op(fn_name: str, op: dict, on_behalf_of: str, block=None)
     elif fn_name == "repay":
         raw_amount = parse_amount(op["amount"], decimals)
         data = cv.repay.encode_input(raw_amount)
+    elif fn_name == "set_ltv":
+        ltv = int(op["ltv"])
+        data = cv.setTwyneLiqLTV.encode_input(ltv)
     else:
         raise ValueError(f"Unknown collateral action: {fn_name}")
 

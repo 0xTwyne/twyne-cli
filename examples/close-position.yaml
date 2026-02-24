@@ -1,0 +1,23 @@
+# Close position: repay all debt, release credit, withdraw all collateral
+#
+# Prerequisites:
+#   1. Approve the borrow asset (USDC) to the collateral vault:
+#      cast send 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
+#        "approve(address,uint256)" <vault-address> <max-uint256> \
+#        --private-key <key> --rpc-url <rpc>
+#
+#   2. Run the batch:
+#      twyne tx batch execute examples/close-position.yaml --private-key <key>
+
+operations:
+  - action: collateral.repay
+    vault: "0x7C20a1FA13C60c39EcAe3093FBb78971b6b61BC8"
+    amount: "max"
+
+  - action: collateral.set_ltv
+    vault: "0x7C20a1FA13C60c39EcAe3093FBb78971b6b61BC8"
+    ltv: 8600  # minimum (= extLiqLTV), releases all reserved credit
+
+  - action: collateral.withdraw
+    vault: "0x7C20a1FA13C60c39EcAe3093FBb78971b6b61BC8"
+    amount: "max"
