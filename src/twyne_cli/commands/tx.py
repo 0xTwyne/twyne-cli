@@ -2,7 +2,7 @@
 
 import click
 
-from ..batch import build_batch_items, parse_batch_file
+from ..batch import build_batch_items, collect_approval_requirements, parse_batch_file
 from ..constants import DEFAULT_SLIPPAGE
 from ..context import TwyneContext, pass_ctx
 from ..contracts import (
@@ -25,6 +25,7 @@ from ..formatting import format_address
 from ..transactions import (
     confirm_prompt,
     display_receipt,
+    ensure_allowance,
     execute_through_evc,
     parse_amount,
     resolve_account,
@@ -47,6 +48,10 @@ def tx_options(f):
                      help="Skip confirmation prompt")(f)
     f = click.option("--raw", is_flag=True, default=False,
                      help="Treat amount as raw wei (no decimal conversion)")(f)
+    f = click.option("--max-approve", is_flag=True, default=False,
+                     help="Use max uint256 approval instead of exact amount")(f)
+    f = click.option("--skip-approval", is_flag=True, default=False,
+                     help="Don't auto-approve; error if allowance insufficient")(f)
     return f
 
 
@@ -82,7 +87,7 @@ def collateral():
 @click.argument("amount")
 @tx_options
 @pass_ctx
-def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key, dry_run, skip_confirm, raw):
+def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval):
     """Deposit collateral token into a vault."""
     ctx.connect()
     try:
@@ -90,6 +95,14 @@ def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key
         cv = collateral_vault(vault_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
+
+        # Ensure token approval (cv.asset() → vault)
+        asset_addr = cv.asset()
+        if not ensure_allowance(asset_addr, vault_address, raw_amount, account,
+                                skip_confirm=skip_confirm, skip_approval=skip_approval,
+                                max_approve=max_approve):
+            click.echo("Approval declined.")
+            return
 
         sim = simulate_tx(cv, "deposit", [raw_amount], sender=account)
         if not sim["success"]:
@@ -121,7 +134,7 @@ def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key
 @click.argument("amount")
 @tx_options
 @pass_ctx
-def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, private_key, dry_run, skip_confirm, raw):
+def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval):
     """Deposit underlying asset (e.g., raw ETH for a wstETH vault)."""
     ctx.connect()
     try:
@@ -129,6 +142,14 @@ def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, 
         cv = collateral_vault(vault_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
+
+        # Ensure token approval (underlying asset → vault)
+        underlying_addr = cv.underlyingAsset()
+        if not ensure_allowance(underlying_addr, vault_address, raw_amount, account,
+                                skip_confirm=skip_confirm, skip_approval=skip_approval,
+                                max_approve=max_approve):
+            click.echo("Approval declined.")
+            return
 
         sim = simulate_tx(cv, "depositUnderlying", [raw_amount], sender=account)
         if not sim["success"]:
@@ -161,7 +182,7 @@ def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, 
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
 @pass_ctx
-def withdraw(ctx: TwyneContext, vault_address, amount, receiver, account_alias, private_key, dry_run, skip_confirm, raw):
+def withdraw(ctx: TwyneContext, vault_address, amount, receiver, account_alias, private_key, dry_run, skip_confirm, raw, **_):
     """Withdraw collateral from a vault."""
     ctx.connect()
     try:
@@ -203,7 +224,7 @@ def withdraw(ctx: TwyneContext, vault_address, amount, receiver, account_alias, 
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
 @pass_ctx
-def redeem_underlying(ctx: TwyneContext, vault_address, amount, receiver, account_alias, private_key, dry_run, skip_confirm, raw):
+def redeem_underlying(ctx: TwyneContext, vault_address, amount, receiver, account_alias, private_key, dry_run, skip_confirm, raw, **_):
     """Withdraw as underlying asset from a vault."""
     ctx.connect()
     try:
@@ -245,7 +266,7 @@ def redeem_underlying(ctx: TwyneContext, vault_address, amount, receiver, accoun
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
 @pass_ctx
-def borrow(ctx: TwyneContext, vault_address, amount, receiver, account_alias, private_key, dry_run, skip_confirm, raw):
+def borrow(ctx: TwyneContext, vault_address, amount, receiver, account_alias, private_key, dry_run, skip_confirm, raw, **_):
     """Borrow from the external protocol via a collateral vault."""
     ctx.connect()
     try:
@@ -286,7 +307,7 @@ def borrow(ctx: TwyneContext, vault_address, amount, receiver, account_alias, pr
 @click.argument("amount")
 @tx_options
 @pass_ctx
-def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, dry_run, skip_confirm, raw):
+def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval):
     """Repay borrowed amount to a collateral vault."""
     ctx.connect()
     try:
@@ -294,6 +315,19 @@ def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, 
         cv = collateral_vault(vault_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
+
+        # Ensure token approval (targetAsset → vault)
+        # For "max" repay, use maxRepay() + 1% buffer for accrued interest
+        target_addr = cv.targetAsset()
+        if raw_amount == 2**256 - 1:
+            approval_amount = cv.maxRepay() * 101 // 100
+        else:
+            approval_amount = raw_amount
+        if not ensure_allowance(target_addr, vault_address, approval_amount, account,
+                                skip_confirm=skip_confirm, skip_approval=skip_approval,
+                                max_approve=max_approve):
+            click.echo("Approval declined.")
+            return
 
         sim = simulate_tx(cv, "repay", [raw_amount], sender=account)
         if not sim["success"]:
@@ -444,7 +478,7 @@ def credit():
               help="Which wrapper to use (euler or aave)")
 @tx_options
 @pass_ctx
-def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, dry_run, skip_confirm, raw):
+def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval):
     """Deposit underlying asset into an intermediate vault via wrapper."""
     ctx.connect()
     try:
@@ -455,6 +489,16 @@ def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alia
         cv = credit_vault(iv_address)  # ERC4626-compatible interface
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
+
+        # Ensure token approval (underlying → wrapper)
+        # IV.asset() → eVault, eVault.asset() → underlying token
+        evault_addr = cv.asset()
+        underlying_addr = credit_vault(evault_addr).asset()
+        if not ensure_allowance(underlying_addr, str(wrapper.address), raw_amount, account,
+                                skip_confirm=skip_confirm, skip_approval=skip_approval,
+                                max_approve=max_approve):
+            click.echo("Approval declined.")
+            return
 
         sim = simulate_tx(wrapper, "depositUnderlyingToIntermediateVault", [iv_address, raw_amount], sender=account)
         if not sim["success"]:
@@ -489,7 +533,7 @@ def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alia
               help="Which wrapper to use (euler or aave)")
 @tx_options
 @pass_ctx
-def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, dry_run, skip_confirm, raw):
+def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval):
     """Deposit underlying asset into intermediate vault (alias for deposit)."""
     ctx.connect()
     try:
@@ -499,6 +543,15 @@ def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, a
         cv = credit_vault(iv_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
+
+        # Ensure token approval (underlying → wrapper)
+        evault_addr = cv.asset()
+        underlying_addr = credit_vault(evault_addr).asset()
+        if not ensure_allowance(underlying_addr, str(wrapper.address), raw_amount, account,
+                                skip_confirm=skip_confirm, skip_approval=skip_approval,
+                                max_approve=max_approve):
+            click.echo("Approval declined.")
+            return
 
         sim = simulate_tx(wrapper, "depositUnderlyingToIntermediateVault", [iv_address, raw_amount], sender=account)
         if not sim["success"]:
@@ -531,7 +584,7 @@ def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, a
 @click.argument("amount")
 @tx_options
 @pass_ctx
-def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, private_key, dry_run, skip_confirm, raw):
+def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval):
     """Deposit Aave aTokens into an intermediate vault via aToken wrapper."""
     ctx.connect()
     try:
@@ -541,6 +594,14 @@ def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, privat
         cv = credit_vault(iv_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
+
+        # Ensure token approval (aToken → aToken wrapper)
+        atoken_addr = wrapper.aToken()
+        if not ensure_allowance(atoken_addr, str(wrapper.address), raw_amount, account,
+                                skip_confirm=skip_confirm, skip_approval=skip_approval,
+                                max_approve=max_approve):
+            click.echo("Approval declined.")
+            return
 
         sim = simulate_tx(wrapper, "depositATokens", [iv_address, raw_amount], sender=account)
         if not sim["success"]:
@@ -573,7 +634,7 @@ def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, privat
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
 @pass_ctx
-def credit_withdraw(ctx: TwyneContext, iv_address, amount, receiver, account_alias, private_key, dry_run, skip_confirm, raw):
+def credit_withdraw(ctx: TwyneContext, iv_address, amount, receiver, account_alias, private_key, dry_run, skip_confirm, raw, **_):
     """Withdraw assets from an intermediate vault (ERC4626 withdraw)."""
     ctx.connect()
     try:
@@ -615,7 +676,7 @@ def credit_withdraw(ctx: TwyneContext, iv_address, amount, receiver, account_ali
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
 @pass_ctx
-def credit_redeem(ctx: TwyneContext, iv_address, shares, receiver, account_alias, private_key, dry_run, skip_confirm, raw):
+def credit_redeem(ctx: TwyneContext, iv_address, shares, receiver, account_alias, private_key, dry_run, skip_confirm, raw, **_):
     """Redeem shares from an intermediate vault (ERC4626 redeem)."""
     ctx.connect()
     try:
@@ -924,7 +985,8 @@ def batch():
 @click.option("--evc-address", default=None, help="EVC address override (defaults to batch file or Twyne EVC)")
 @tx_options
 @pass_ctx
-def execute(ctx: TwyneContext, batch_file, evc_address, account_alias, private_key, dry_run, skip_confirm, **_):
+def execute(ctx: TwyneContext, batch_file, evc_address, account_alias, private_key, dry_run, skip_confirm,
+            max_approve=False, skip_approval=False, **_):
     """Execute a batch of operations via EVC.batch().
 
     BATCH_FILE: Path to YAML or JSON batch definition file.
@@ -933,6 +995,15 @@ def execute(ctx: TwyneContext, batch_file, evc_address, account_alias, private_k
     try:
         account = resolve_account(account_alias, private_key)
         batch_data = parse_batch_file(batch_file)
+
+        # Auto-approve tokens needed by batch operations
+        requirements = collect_approval_requirements(batch_data, str(account.address))
+        for req in requirements:
+            if not ensure_allowance(req["token"], req["spender"], req["amount"], account,
+                                    skip_confirm=skip_confirm, skip_approval=skip_approval,
+                                    max_approve=max_approve):
+                click.echo("Approval declined.")
+                return
 
         evc_addr = evc_address or batch_data.get("evc") or get_address("evc")
         evc_instance = evc_contract(evc_addr)

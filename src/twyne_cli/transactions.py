@@ -114,3 +114,65 @@ def display_receipt(receipt):
     click.echo("=" * 40)
     click.echo(format_receipt(receipt))
     click.echo()
+
+
+def ensure_allowance(
+    token_address: str,
+    spender: str,
+    amount: int,
+    sender,
+    skip_confirm: bool = False,
+    skip_approval: bool = False,
+    max_approve: bool = False,
+) -> bool:
+    """Check token allowance and send approval tx if insufficient.
+
+    Approvals are sent as DIRECT transactions (not EVC-routed) because
+    msg.sender must be the user's EOA for the allowance to be set correctly.
+
+    Returns True if allowance is sufficient (already or after approval).
+    Returns False if user declined the approval prompt.
+    Raises click.UsageError if skip_approval=True and allowance is insufficient.
+    """
+    from .contracts import erc20
+
+    token = erc20(token_address)
+    current = token.allowance(str(sender.address), spender)
+
+    if current >= amount:
+        return True
+
+    if skip_approval:
+        symbol = token.symbol()
+        raise click.UsageError(
+            f"Insufficient allowance for {symbol} ({token_address}). "
+            f"Approve spender {spender} manually or remove --skip-approval."
+        )
+
+    symbol = token.symbol()
+    decimals = token.decimals()
+    approve_amount = 2**256 - 1 if max_approve else amount
+
+    # Format human-readable amount
+    if max_approve:
+        display_amount = "unlimited (max uint256)"
+    else:
+        whole = amount // 10**decimals
+        frac = amount % 10**decimals
+        display_amount = f"{whole}.{str(frac).zfill(decimals).rstrip('0') or '0'}"
+
+    details = [
+        ("Token", f"{symbol} ({token_address})"),
+        ("Spender", spender),
+        ("Amount", f"{display_amount} (raw: {approve_amount})"),
+    ]
+
+    if not confirm_prompt("Token Approval", details, skip=skip_confirm):
+        return False
+
+    receipt = token.approve(spender, approve_amount, sender=sender)
+    click.echo("\nApproval Result:")
+    click.echo("-" * 40)
+    click.echo(format_receipt(receipt))
+    click.echo()
+    return True

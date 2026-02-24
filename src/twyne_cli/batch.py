@@ -125,3 +125,65 @@ def _encode_token_op(fn_name: str, op: dict, on_behalf_of: str, block=None) -> d
 def build_batch_items(batch_data: dict, on_behalf_of: str, block=None) -> list[dict]:
     """Build list of BatchItem dicts from parsed batch file."""
     return [encode_operation(op, on_behalf_of, block) for op in batch_data["operations"]]
+
+
+def collect_approval_requirements(batch_data: dict, on_behalf_of: str, block=None) -> list[dict]:
+    """Analyze batch operations and return required token approvals.
+
+    Scans operations that pull tokens from the user and returns a deduplicated
+    list of {token, spender, amount, reason} dicts. Skips (token, spender) pairs
+    that already have an explicit token.approve action in the batch.
+
+    Returns list of dicts: {token, spender, amount, reason}.
+    """
+    # First pass: collect explicit approvals already in the batch
+    explicit_approvals: set[tuple[str, str]] = set()
+    for op in batch_data["operations"]:
+        if op["action"] == "token.approve":
+            explicit_approvals.add((op["token"].lower(), op["spender"].lower()))
+
+    # Second pass: collect requirements from token-pulling operations
+    requirements: dict[tuple[str, str], dict] = {}
+    for op in batch_data["operations"]:
+        action = op["action"]
+        parts = action.split(".")
+        if parts[0] != "collateral" or len(parts) < 2:
+            continue
+
+        fn_name = parts[1]
+        if fn_name not in ("deposit", "deposit_underlying", "repay"):
+            continue
+
+        vault_addr = op["vault"]
+        cv = collateral_vault(vault_addr)
+
+        if fn_name == "deposit":
+            token_addr = cv.asset(block_identifier=block)
+        elif fn_name == "deposit_underlying":
+            token_addr = cv.underlyingAsset(block_identifier=block)
+        elif fn_name == "repay":
+            token_addr = cv.targetAsset(block_identifier=block)
+        else:
+            continue
+
+        # Skip if batch already has an explicit approval for this pair
+        key = (token_addr.lower(), vault_addr.lower())
+        if key in explicit_approvals:
+            continue
+
+        token = erc20(token_addr)
+        decimals = token.decimals(block_identifier=block)
+        raw_amount = parse_amount(op["amount"], decimals)
+
+        if key in requirements:
+            requirements[key]["amount"] += raw_amount
+        else:
+            symbol = token.symbol(block_identifier=block)
+            requirements[key] = {
+                "token": token_addr,
+                "spender": vault_addr,
+                "amount": raw_amount,
+                "reason": f"{fn_name} {symbol} to {vault_addr[:10]}...",
+            }
+
+    return list(requirements.values())
