@@ -197,13 +197,6 @@ class TestBatchBuildAndSimulate:
         f.write_text(yaml.dump(batch))
         return str(f)
 
-    @pytest.mark.xfail(
-        reason="BUG: batch.py encode_operation() uses cv.deposit.as_transaction() "
-        "which triggers Ape gas estimation. This hits the callThroughEVC modifier "
-        "and reverts with EVC_OnBehalfOfAccountNotAuthenticated (0x5217b8ae). "
-        "The batch encoder cannot produce calldata for CV operations.",
-        strict=True,
-    )
     def test_build_batch_items(self, test_account, ape_provider, tmp_path):
         """build_batch_items fails because as_transaction() triggers EVC auth."""
         vault_address = _create_vault_via_evc(test_account)
@@ -221,11 +214,6 @@ class TestBatchBuildAndSimulate:
             assert "data" in item
             assert item["onBehalfOfAccount"] == str(test_account.address)
 
-    @pytest.mark.xfail(
-        reason="BUG: batch.py encode_operation() fails (same as test_build_batch_items), "
-        "so batch simulation cannot be tested end-to-end.",
-        strict=True,
-    )
     def test_batch_simulate_via_evc(self, test_account, ape_provider, tmp_path, funded_weth):
         """Build batch items and run EVC.batchSimulation() via simulate_tx."""
         vault_address = _create_vault_via_evc(test_account)

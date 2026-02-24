@@ -75,18 +75,18 @@ def _encode_collateral_op(fn_name: str, op: dict, on_behalf_of: str, block=None)
 
     if fn_name == "deposit":
         raw_amount = parse_amount(op["amount"], decimals)
-        data = cv.deposit.as_transaction(raw_amount).data
+        data = cv.deposit.encode_input(raw_amount)
     elif fn_name == "borrow":
         raw_amount = parse_amount(op["amount"], decimals)
         receiver = op.get("receiver", on_behalf_of)
-        data = cv.borrow.as_transaction(raw_amount, receiver).data
+        data = cv.borrow.encode_input(raw_amount, receiver)
     elif fn_name == "withdraw":
         raw_amount = parse_amount(op["amount"], decimals)
         receiver = op.get("receiver", on_behalf_of)
-        data = cv.withdraw.as_transaction(raw_amount, receiver).data
+        data = cv.withdraw.encode_input(raw_amount, receiver)
     elif fn_name == "repay":
         raw_amount = parse_amount(op["amount"], decimals)
-        data = cv.repay.as_transaction(raw_amount).data
+        data = cv.repay.encode_input(raw_amount)
     else:
         raise ValueError(f"Unknown collateral action: {fn_name}")
 
@@ -107,7 +107,7 @@ def _encode_token_op(fn_name: str, op: dict, on_behalf_of: str, block=None) -> d
     if fn_name == "approve":
         raw_amount = parse_amount(op["amount"], decimals)
         spender = op["spender"]
-        data = token.approve.as_transaction(spender, raw_amount).data
+        data = token.approve.encode_input(spender, raw_amount)
     else:
         raise ValueError(f"Unknown token action: {fn_name}")
 

@@ -90,6 +90,11 @@ def collateral_vault(address: str):
     return Contract(address, abi=_load_abi("CollateralVault"))
 
 
+def credit_vault(address: str):
+    """Get a credit/intermediate vault (EVault) instance at a given address."""
+    return Contract(address, abi=_load_abi("EVault"))
+
+
 def euler_oracle():
     """Get Euler oracle router contract instance."""
     return Contract(get_address("oracleRouter"), abi=_load_abi("EulerRouter"))

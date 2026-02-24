@@ -10,6 +10,7 @@ from ..contracts import (
     aave_wrapper,
     collateral_vault,
     collateral_vault_factory,
+    credit_vault,
     deleverage_operator,
     erc20,
     euler_wrapper,
@@ -450,7 +451,7 @@ def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alia
         wrapper = euler_wrapper() if protocol == "euler" else aave_wrapper()
 
         # Get decimals from the intermediate vault's asset
-        cv = collateral_vault(iv_address)  # ERC4626-compatible interface
+        cv = credit_vault(iv_address)  # ERC4626-compatible interface
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
 
@@ -494,7 +495,7 @@ def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, a
         account = resolve_account(account_alias, private_key)
         wrapper = euler_wrapper() if protocol == "euler" else aave_wrapper()
 
-        cv = collateral_vault(iv_address)
+        cv = credit_vault(iv_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
 
@@ -536,7 +537,7 @@ def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, privat
         account = resolve_account(account_alias, private_key)
         wrapper = aave_atoken_wrapper()
 
-        cv = collateral_vault(iv_address)
+        cv = credit_vault(iv_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
 
@@ -576,7 +577,7 @@ def credit_withdraw(ctx: TwyneContext, iv_address, amount, receiver, account_ali
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key)
-        cv = collateral_vault(iv_address)  # ERC4626-compatible interface
+        cv = credit_vault(iv_address)  # ERC4626-compatible interface
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
         recv = receiver or str(account.address)
@@ -618,7 +619,7 @@ def credit_redeem(ctx: TwyneContext, iv_address, shares, receiver, account_alias
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key)
-        cv = collateral_vault(iv_address)  # ERC4626-compatible interface
+        cv = credit_vault(iv_address)  # ERC4626-compatible interface
         decimals = 18  # EVault shares are always 18 decimals
         raw_shares = parse_amount(shares, decimals, raw=raw)
         recv = receiver or str(account.address)

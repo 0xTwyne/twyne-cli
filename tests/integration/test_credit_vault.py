@@ -16,7 +16,7 @@ E_SupplyCapExceeded (0x426073f2) errors during test deposit accumulation.
 import pytest
 from ape import Contract
 
-from twyne_cli.contracts import aave_atoken_wrapper, collateral_vault, euler_wrapper
+from twyne_cli.contracts import aave_atoken_wrapper, collateral_vault, credit_vault, euler_wrapper
 from twyne_cli.transactions import simulate_tx
 
 from .conftest import (
@@ -207,19 +207,11 @@ class TestCreditWithdraw:
         )
         assert result["success"], f"Simulation failed: {result.get('error')}"
 
-    @pytest.mark.xfail(
-        reason="BUG: CLI uses collateral_vault(iv) which loads CollateralVault ABI "
-        "with 2-arg withdraw(uint256, address). IV needs ERC4626 3-arg "
-        "withdraw(uint256, address, address).",
-        strict=True,
-    )
-    def test_cli_withdraw_wrong_abi(self, test_account, funded_iv):
-        """CLI's collateral_vault() ABI doesn't have 3-arg ERC4626 withdraw."""
-        cv = collateral_vault(EULER_EWETH_IV)
+    def test_cli_withdraw_correct_abi(self, test_account, funded_iv):
+        """CLI's credit_vault() ABI has 3-arg ERC4626 withdraw."""
+        cv = credit_vault(EULER_EWETH_IV)
         addr = str(test_account.address)
 
-        # This should fail because collateral_vault ABI has withdraw(uint256, address)
-        # not withdraw(uint256, address, address)
         result = simulate_tx(
             cv, "withdraw", [1 * 10**18, addr, addr], sender=test_account
         )
@@ -306,17 +298,11 @@ class TestCreditRedeem:
         )
         assert not result["success"]
 
-    @pytest.mark.xfail(
-        reason="BUG: CLI uses collateral_vault(iv) which loads CollateralVault ABI "
-        "that has NO redeem function. IV needs ERC4626 redeem(uint256, address, address).",
-        strict=True,
-    )
-    def test_cli_redeem_wrong_abi(self, test_account, funded_iv):
-        """CLI's collateral_vault() ABI doesn't have ERC4626 redeem."""
-        cv = collateral_vault(EULER_EWETH_IV)
+    def test_cli_redeem_correct_abi(self, test_account, funded_iv):
+        """CLI's credit_vault() ABI has ERC4626 redeem."""
+        cv = credit_vault(EULER_EWETH_IV)
         addr = str(test_account.address)
 
-        # This should fail because collateral_vault ABI has no redeem function
         result = simulate_tx(
             cv, "redeem", [10**18, addr, addr], sender=test_account
         )
