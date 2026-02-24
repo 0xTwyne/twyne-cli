@@ -159,3 +159,17 @@ def aave_wrapper():
 def aave_atoken_wrapper():
     """Get Aave aToken wrapper contract."""
     return Contract(get_address("aWSTETHWrapper"), abi=_load_abi("AaveATokenWrapper"))
+
+
+def resolve_aave_factory_vault(address: str) -> str | None:
+    """If address is a known Aave IV, return the aToken wrapper the factory expects.
+
+    Returns None if no mapping exists (address is already correct or unknown).
+    """
+    addrs = _load_addresses()
+    mapping = addrs.get("aaveIVToFactoryVault", {})
+    addr_lower = address.lower()
+    for iv, wrapper in mapping.items():
+        if iv.lower() == addr_lower:
+            return wrapper
+    return None

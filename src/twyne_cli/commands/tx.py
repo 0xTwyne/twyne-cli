@@ -16,6 +16,7 @@ from ..contracts import (
     euler_wrapper,
     get_address,
     leverage_operator,
+    resolve_aave_factory_vault,
     teleport_operator,
 )
 from ..contracts import (
@@ -29,8 +30,38 @@ from ..transactions import (
     execute_through_evc,
     parse_amount,
     resolve_account,
+    simulate_through_evc,
     simulate_tx,
 )
+
+
+def _format_sim_address(value) -> str:
+    """Convert a simulation return value (bytes or str) to a checksummed address."""
+    if isinstance(value, (bytes, bytearray)):
+        raw_hex = value.hex()[-40:]
+        value = f"0x{raw_hex}"
+    addr = str(value)
+    # Apply EIP-55 checksum
+    try:
+        from eth_utils import to_checksum_address
+        return to_checksum_address(addr)
+    except Exception:
+        return addr
+
+
+def _show_verbose_error(ctx: TwyneContext, sim: dict):
+    """If --verbose, display extra revert/trace info from failed simulation."""
+    if not getattr(ctx, "verbose", False):
+        return
+    if sim.get("revert_message"):
+        click.echo(f"  Revert reason: {sim['revert_message']}", err=True)
+    if sim.get("dev_message"):
+        click.echo(f"  Dev message:   {sim['dev_message']}", err=True)
+    if sim.get("contract_address"):
+        click.echo(f"  Contract:      {sim['contract_address']}", err=True)
+    if sim.get("source_traceback"):
+        click.echo(f"  Traceback:\n{sim['source_traceback']}", err=True)
+
 
 # --------------------------------------------------------------------------- #
 # Shared options for all tx commands
@@ -107,6 +138,7 @@ def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key
         sim = simulate_tx(cv, "deposit", [raw_amount], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -154,6 +186,7 @@ def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, 
         sim = simulate_tx(cv, "depositUnderlying", [raw_amount], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -195,6 +228,7 @@ def withdraw(ctx: TwyneContext, vault_address, amount, receiver, account_alias, 
         sim = simulate_tx(cv, "withdraw", [raw_amount, recv], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -237,6 +271,7 @@ def redeem_underlying(ctx: TwyneContext, vault_address, amount, receiver, accoun
         sim = simulate_tx(cv, "redeemUnderlying", [raw_amount, recv], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -279,6 +314,7 @@ def borrow(ctx: TwyneContext, vault_address, amount, receiver, account_alias, pr
         sim = simulate_tx(cv, "borrow", [raw_amount, recv], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -332,6 +368,7 @@ def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, 
         sim = simulate_tx(cv, "repay", [raw_amount], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -369,6 +406,7 @@ def set_ltv(ctx: TwyneContext, vault_address, ltv, account_alias, private_key, d
         sim = simulate_tx(cv, "setTwyneLiqLTV", [ltv], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -405,6 +443,7 @@ def liquidate(ctx: TwyneContext, vault_address, account_alias, private_key, dry_
         sim = simulate_tx(cv, "liquidate", [], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -440,6 +479,7 @@ def skim(ctx: TwyneContext, vault_address, account_alias, private_key, dry_run, 
         sim = simulate_tx(cv, "skim", [], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -503,6 +543,7 @@ def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alia
         sim = simulate_tx(wrapper, "depositUnderlyingToIntermediateVault", [iv_address, raw_amount], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -556,6 +597,7 @@ def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, a
         sim = simulate_tx(wrapper, "depositUnderlyingToIntermediateVault", [iv_address, raw_amount], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -606,6 +648,7 @@ def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, privat
         sim = simulate_tx(wrapper, "depositATokens", [iv_address, raw_amount], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -647,6 +690,7 @@ def credit_withdraw(ctx: TwyneContext, iv_address, amount, receiver, account_ali
         sim = simulate_tx(cv, "withdraw", [raw_amount, recv, str(account.address)], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -689,6 +733,7 @@ def credit_redeem(ctx: TwyneContext, iv_address, shares, receiver, account_alias
         sim = simulate_tx(cv, "redeem", [raw_shares, recv, str(account.address)], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -761,6 +806,7 @@ def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage, api_k
         sim = simulate_tx(op, "executeLeverage", [vault_address, raw_amount, b""], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         if dry_run:
@@ -815,6 +861,7 @@ def deleverage(ctx: TwyneContext, vault_address, amount, protocol, slippage, api
         sim = simulate_tx(op, "executeDeleverage", [vault_address, raw_amount, b""], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         if dry_run:
@@ -861,6 +908,7 @@ def teleport(ctx: TwyneContext, vault_address, target_vault_address, protocol,
             sim = simulate_tx(cv, "teleport", [target_vault_address], sender=account)
             if not sim["success"]:
                 click.echo(f"Simulation failed: {sim['error']}", err=True)
+                _show_verbose_error(ctx, sim)
                 raise SystemExit(1)
 
             if dry_run:
@@ -882,6 +930,7 @@ def teleport(ctx: TwyneContext, vault_address, target_vault_address, protocol,
             sim = simulate_tx(op, "executeTeleport", [vault_address, target_vault_address], sender=account)
             if not sim["success"]:
                 click.echo(f"Simulation failed: {sim['error']}", err=True)
+                _show_verbose_error(ctx, sim)
                 raise SystemExit(1)
 
             if dry_run:
@@ -913,22 +962,36 @@ def factory():
 
 
 @factory.command(name="create-vault")
-@click.argument("asset_address")
-@click.argument("target_vault_address")
+@click.argument("intermediate_vault")
+@click.argument("target_vault")
 @click.option("--vault-type", type=int, default=0, help="Vault type: 0=Euler, 1=Aave (default: 0)")
 @click.option("--ltv", type=int, default=8500, help="Liquidation LTV in basis points (default: 8500 = 85%)")
 @click.option("--target-asset", default=None, help="Debt token address (required for Aave, ignored for Euler)")
 @tx_options
 @pass_ctx
-def create_vault(ctx: TwyneContext, asset_address, target_vault_address, vault_type, ltv, target_asset,
+def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type, ltv, target_asset,
                  account_alias, private_key, dry_run, skip_confirm, **_):
     """Create a new collateral vault via the factory.
 
-    ASSET_ADDRESS: Collateral token address (e.g., eWETH).
+    INTERMEDIATE_VAULT: The Twyne Intermediate Vault (CreditEVault) address.
 
-    TARGET_VAULT_ADDRESS: External lending vault (Euler eVault or Aave pool).
+    TARGET_VAULT: External lending vault (Euler eVault or Aave pool).
     """
     from ..constants import ZERO_ADDRESS
+
+    if vault_type == 1 and not target_asset:
+        raise click.UsageError("Aave vaults (--vault-type 1) require --target-asset <debt-token-address>.")
+
+    if vault_type == 1:
+        resolved = resolve_aave_factory_vault(intermediate_vault)
+        if resolved:
+            click.echo(
+                f"Note: Aave vaults require the aToken wrapper address for the factory.\n"
+                f"  Resolving {intermediate_vault[:10]}...{intermediate_vault[-4:]}"
+                f" → {resolved[:10]}...{resolved[-4:]}",
+                err=True,
+            )
+            intermediate_vault = resolved
 
     ctx.connect()
     try:
@@ -936,19 +999,20 @@ def create_vault(ctx: TwyneContext, asset_address, target_vault_address, vault_t
         fct = collateral_vault_factory()
         target_asset = target_asset or ZERO_ADDRESS
 
-        args = [vault_type, asset_address, target_vault_address, ltv, target_asset]
+        args = [vault_type, intermediate_vault, target_vault, ltv, target_asset]
 
-        sim = simulate_tx(fct, "createCollateralVault", args, sender=account)
+        sim = simulate_through_evc(fct, "createCollateralVault", args, sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         vault_type_name = "Euler" if vault_type == 0 else "Aave"
         details = [
             ("Factory", str(fct.address)),
             ("Vault Type", vault_type_name),
-            ("Asset", asset_address),
-            ("Target Vault", target_vault_address),
+            ("Intermediate Vault", intermediate_vault),
+            ("Target Vault", target_vault),
             ("Liq LTV", f"{ltv} bp ({ltv/100:.1f}%)"),
             ("Target Asset", target_asset),
             ("Sender", str(account.address)),
@@ -957,7 +1021,7 @@ def create_vault(ctx: TwyneContext, asset_address, target_vault_address, vault_t
         if dry_run:
             click.echo("Dry run — simulation passed.")
             if sim.get("result"):
-                click.echo(f"Predicted vault address: {sim['result']}")
+                click.echo(f"Predicted vault address: {_format_sim_address(sim['result'])}")
             return
 
         if not confirm_prompt(f"Create {vault_type_name} collateral vault", details, skip_confirm):
@@ -965,9 +1029,27 @@ def create_vault(ctx: TwyneContext, asset_address, target_vault_address, vault_t
             return
 
         receipt = execute_through_evc(fct, "createCollateralVault", args, account)
+        vault_address = _extract_vault_address_from_receipt(receipt, str(fct.address))
+        if vault_address:
+            click.echo(f"New vault address: {vault_address}")
         display_receipt(receipt)
     finally:
         ctx.disconnect()
+
+
+# T_CollateralVaultCreated(address indexed vault) — keccak topic stored without
+# prefix to avoid secret-pattern false positives (matches conftest convention).
+_VAULT_CREATED_TOPIC_HEX = "d5c014427d17eead1b9e8111804901d992255c3982e066ff0b196835c2747e15"
+
+
+def _extract_vault_address_from_receipt(receipt, factory_address: str) -> str | None:
+    """Extract new vault address from T_CollateralVaultCreated event in receipt logs."""
+    for log in receipt.logs:
+        if str(log.get("address", "")).lower() == factory_address.lower():
+            topics = log.get("topics", [])
+            if len(topics) >= 2 and topics[0].hex() == _VAULT_CREATED_TOPIC_HEX:
+                return "0x" + topics[1].hex()[-40:]
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -1019,6 +1101,7 @@ def execute(ctx: TwyneContext, batch_file, evc_address, account_alias, private_k
         sim = simulate_tx(evc_instance, "batch", [batch_items], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
         details = [
@@ -1080,6 +1163,7 @@ def simulate(ctx: TwyneContext, batch_file, evc_address, account_alias, private_
                 click.echo(f"Result: {sim['result']}")
         else:
             click.echo(f"Batch simulation: FAILED — {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
             raise SystemExit(1)
     finally:
         ctx.disconnect()
