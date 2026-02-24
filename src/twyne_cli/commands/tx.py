@@ -25,6 +25,7 @@ from ..formatting import format_address
 from ..transactions import (
     confirm_prompt,
     display_receipt,
+    execute_through_evc,
     parse_amount,
     resolve_account,
     simulate_tx,
@@ -109,7 +110,7 @@ def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key
             click.echo("Cancelled.")
             return
 
-        receipt = cv.deposit(raw_amount, sender=account)
+        receipt = execute_through_evc(cv, "deposit", [raw_amount], account)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -148,7 +149,7 @@ def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, 
             click.echo("Cancelled.")
             return
 
-        receipt = cv.depositUnderlying(raw_amount, sender=account)
+        receipt = execute_through_evc(cv, "depositUnderlying", [raw_amount], account)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -190,7 +191,7 @@ def withdraw(ctx: TwyneContext, vault_address, amount, receiver, account_alias, 
             click.echo("Cancelled.")
             return
 
-        receipt = cv.withdraw(raw_amount, recv, sender=account)
+        receipt = execute_through_evc(cv, "withdraw", [raw_amount, recv], account)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -232,7 +233,7 @@ def redeem_underlying(ctx: TwyneContext, vault_address, amount, receiver, accoun
             click.echo("Cancelled.")
             return
 
-        receipt = cv.redeemUnderlying(raw_amount, recv, sender=account)
+        receipt = execute_through_evc(cv, "redeemUnderlying", [raw_amount, recv], account)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -274,7 +275,7 @@ def borrow(ctx: TwyneContext, vault_address, amount, receiver, account_alias, pr
             click.echo("Cancelled.")
             return
 
-        receipt = cv.borrow(raw_amount, recv, sender=account)
+        receipt = execute_through_evc(cv, "borrow", [raw_amount, recv], account)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -313,7 +314,7 @@ def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, 
             click.echo("Cancelled.")
             return
 
-        receipt = cv.repay(raw_amount, sender=account)
+        receipt = execute_through_evc(cv, "repay", [raw_amount], account)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -350,7 +351,7 @@ def set_ltv(ctx: TwyneContext, vault_address, ltv, account_alias, private_key, d
             click.echo("Cancelled.")
             return
 
-        receipt = cv.setTwyneLiqLTV(ltv, sender=account)
+        receipt = execute_through_evc(cv, "setTwyneLiqLTV", [ltv], account)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -385,7 +386,7 @@ def liquidate(ctx: TwyneContext, vault_address, account_alias, private_key, dry_
             click.echo("Cancelled.")
             return
 
-        receipt = cv.liquidate(sender=account)
+        receipt = execute_through_evc(cv, "liquidate", [], account)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -420,7 +421,7 @@ def skim(ctx: TwyneContext, vault_address, account_alias, private_key, dry_run, 
             click.echo("Cancelled.")
             return
 
-        receipt = cv.skim(sender=account)
+        receipt = execute_through_evc(cv, "skim", [], account)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -812,7 +813,7 @@ def teleport(ctx: TwyneContext, vault_address, target_vault_address, protocol,
                 click.echo("Cancelled.")
                 return
 
-            receipt = cv.teleport(target_vault_address, sender=account)
+            receipt = execute_through_evc(cv, "teleport", [target_vault_address], account)
         else:
             op = teleport_operator()
             details.append(("Operator", str(op.address)))
@@ -902,7 +903,7 @@ def create_vault(ctx: TwyneContext, asset_address, target_vault_address, vault_t
             click.echo("Cancelled.")
             return
 
-        receipt = fct.createCollateralVault(*args, sender=account)
+        receipt = execute_through_evc(fct, "createCollateralVault", args, account)
         display_receipt(receipt)
     finally:
         ctx.disconnect()

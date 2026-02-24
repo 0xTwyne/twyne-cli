@@ -64,6 +64,23 @@ def simulate_tx(contract, fn_name: str, args: list, sender=None) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def execute_through_evc(contract, fn_name: str, args: list, sender):
+    """Execute a contract function routed through the Twyne EVC.
+
+    Twyne contracts with the callThroughEVC modifier (CollateralVault,
+    CollateralVaultFactory) require msg.sender == EVC. Direct calls revert
+    with EVC_EmptyError. This helper encodes the calldata and routes it
+    via evc.call() using the Twyne EVC (not Euler's EVC).
+    """
+    from .contracts import evc as evc_contract
+
+    evc_instance = evc_contract()  # Uses Twyne EVC from address registry
+    calldata = getattr(contract, fn_name).encode_input(*args)
+    return evc_instance.call(
+        str(contract.address), str(sender.address), 0, calldata, sender=sender
+    )
+
+
 def confirm_prompt(action: str, details: list[tuple[str, str]], skip: bool = False) -> bool:
     """Display transaction details and prompt for confirmation."""
     click.echo(f"\nTransaction: {action}")

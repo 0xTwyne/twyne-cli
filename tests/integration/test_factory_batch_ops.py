@@ -18,7 +18,7 @@ from twyne_cli.contracts import (
 from twyne_cli.contracts import (
     evc as evc_contract,
 )
-from twyne_cli.transactions import simulate_tx
+from twyne_cli.transactions import execute_through_evc, simulate_tx
 
 from .conftest import (
     AAVE_DELEVERAGE_OP,
@@ -62,16 +62,15 @@ class TestFactoryCreateVault:
         assert str(factory.address).lower() == CV_FACTORY.lower()
 
     def test_cli_factory_create_vault_execution(self, test_account, ape_provider):
-        """Direct factory.createCollateralVault() via Ape succeeds on Anvil.
+        """Factory.createCollateralVault() routed through Twyne EVC succeeds.
 
-        On Anvil, test accounts are auto-impersonated which satisfies the
-        callThroughEVC modifier. This verifies the v2 ABI works end-to-end.
+        The factory's callThroughEVC modifier requires msg.sender == EVC.
+        Direct calls fail with EVC_EmptyError. This routes through evc.call()
+        matching the CLI's execute_through_evc() pattern.
         """
         factory = collateral_vault_factory()
-        receipt = factory.createCollateralVault(
-            0, EULER_EWETH, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, EULER_EWETH_IV,
-            sender=test_account,
-        )
+        args = [0, EULER_EWETH, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, EULER_EWETH_IV]
+        receipt = execute_through_evc(factory, "createCollateralVault", args, test_account)
         assert receipt.status == 1
 
     def test_cli_factory_simulation_succeeds(self, test_account, ape_provider):

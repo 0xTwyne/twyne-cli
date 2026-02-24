@@ -194,14 +194,34 @@ def _increase_iv_supply_cap():
 
     IV_SUPPLY_CAP_RAW = 6420  # 100 eWETH
 
-    # Check current cap (idempotent)
+    # Check current cap (idempotent) — try cast, fall back to eth_call
+    import shutil
     import subprocess
-    r = subprocess.run(
-        ["/home/node/.config/.foundry/bin/cast", "call", "--rpc-url", ANVIL_RPC,
-         EULER_EWETH_IV, "caps()(uint16,uint16)"],
-        capture_output=True, text=True, timeout=10,
-    )
-    if str(IV_SUPPLY_CAP_RAW) in r.stdout:
+
+    cast_bin = shutil.which("cast")
+    if not cast_bin:
+        for p in ["~/.foundry/bin/cast", "~/.config/.foundry/bin/cast"]:
+            expanded = os.path.expanduser(p)
+            if os.path.isfile(expanded):
+                cast_bin = expanded
+                break
+
+    already_set = False
+    if cast_bin:
+        r = subprocess.run(
+            [cast_bin, "call", "--rpc-url", ANVIL_RPC,
+             EULER_EWETH_IV, "caps()(uint16,uint16)"],
+            capture_output=True, text=True, timeout=10,
+        )
+        already_set = str(IV_SUPPLY_CAP_RAW) in r.stdout
+    else:
+        # Fallback: raw eth_call — caps() selector 0xe2018768
+        caps_result = _rpc_call("eth_call", [{"to": EULER_EWETH_IV, "data": "0xe2018768"}, "latest"])
+        if caps_result:
+            supply_cap = int(caps_result[2:66], 16)
+            already_set = supply_cap == IV_SUPPLY_CAP_RAW
+
+    if already_set:
         return  # Already set
 
     # Governor of the IV is the VaultManager
