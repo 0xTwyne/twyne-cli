@@ -21,17 +21,11 @@ def resolve_account(account_alias: str | None, private_key: str | None):
     if pk:
         if not pk.startswith("0x"):
             pk = "0x" + pk
+        from ape_test.accounts import TestAccount
         from eth_account import Account as EthAccount
+
         eth_acct = EthAccount.from_key(pk)
-        for acct in accounts:
-            if acct.address.lower() == eth_acct.address.lower():
-                return acct
-        from ape_accounts import import_account_from_private_key
-        alias = f"_cli_ephemeral_{eth_acct.address[:8]}"
-        try:
-            return accounts.load(alias)
-        except Exception:
-            return import_account_from_private_key(alias, "", pk)
+        return TestAccount(index=0, address_str=eth_acct.address, private_key=pk)
 
     raise click.UsageError(
         "No signing account specified. Use --account <alias> or --private-key <key> or set PRIVATE_KEY env var."
