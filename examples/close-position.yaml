@@ -1,0 +1,21 @@
+# Close position: repay all debt, release credit, withdraw all collateral
+#
+# Usage:
+#   twyne tx batch execute examples/close-position.yaml --private-key <key>
+#
+# Token approvals (e.g. USDC for repay) are handled automatically.
+# Add --max-approve for unlimited approval, or --skip-approval to error
+# if allowance is insufficient.
+
+operations:
+  - action: collateral.repay
+    vault: "0x7C20a1FA13C60c39EcAe3093FBb78971b6b61BC8"
+    amount: "max"
+
+  - action: collateral.set_ltv
+    vault: "0x7C20a1FA13C60c39EcAe3093FBb78971b6b61BC8"
+    ltv: 8600  # minimum (= extLiqLTV), releases all reserved credit
+
+  - action: collateral.withdraw
+    vault: "0x7C20a1FA13C60c39EcAe3093FBb78971b6b61BC8"
+    amount: "max"

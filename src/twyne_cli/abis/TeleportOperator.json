@@ -1,0 +1,25 @@
+[
+  {
+    "type": "function",
+    "name": "executeTeleport",
+    "inputs": [
+      {
+        "name": "collateralVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "aTokenAmount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "debtAmount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  }
+]

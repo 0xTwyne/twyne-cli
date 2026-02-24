@@ -38,6 +38,35 @@
     },
     {
         "type": "function",
+        "name": "categoryId",
+        "inputs": [
+            {
+                "name": "targetVault",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "collateralAsset",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "targetAsset",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "categoryId",
+                "type": "uint8",
+                "internalType": "uint8"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
         "name": "collateralVaultBeacon",
         "inputs": [
             {
@@ -84,6 +113,11 @@
         "name": "createCollateralVault",
         "inputs": [
             {
+                "name": "_vaultType",
+                "type": "uint8",
+                "internalType": "enum VaultType"
+            },
+            {
                 "name": "_asset",
                 "type": "address",
                 "internalType": "address"
@@ -97,6 +131,11 @@
                 "name": "_liqLTV",
                 "type": "uint256",
                 "internalType": "uint256"
+            },
+            {
+                "name": "_targetAsset",
+                "type": "address",
+                "internalType": "address"
             }
         ],
         "outputs": [
@@ -164,7 +203,7 @@
         "name": "nonce",
         "inputs": [
             {
-                "name": "",
+                "name": "borrower",
                 "type": "address",
                 "internalType": "address"
             }
@@ -250,6 +289,34 @@
                 "name": "beacon",
                 "type": "address",
                 "internalType": "address"
+            }
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "setCategoryId",
+        "inputs": [
+            {
+                "name": "_targetVault",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_collateralAsset",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_targetAsset",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_categoryId",
+                "type": "uint8",
+                "internalType": "uint8"
             }
         ],
         "outputs": [],
@@ -404,6 +471,31 @@
     },
     {
         "type": "event",
+        "name": "T_AddAllowedTargetVaultAsset",
+        "inputs": [
+            {
+                "name": "intermediateVault",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "targetVault",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "targetAsset",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "event",
         "name": "T_Borrow",
         "inputs": [
             {
@@ -417,6 +509,37 @@
                 "type": "address",
                 "indexed": true,
                 "internalType": "address"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "event",
+        "name": "T_CategoryIdSet",
+        "inputs": [
+            {
+                "name": "targetVault",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "collateral",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "debt",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "categoryId",
+                "type": "uint8",
+                "indexed": false,
+                "internalType": "uint8"
             }
         ],
         "anonymous": false
@@ -765,6 +888,31 @@
     },
     {
         "type": "event",
+        "name": "T_SetOracleResolvedVault",
+        "inputs": [
+            {
+                "name": "oracleRouter",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "collateralAddress",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "allow",
+                "type": "bool",
+                "indexed": false,
+                "internalType": "bool"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "event",
         "name": "T_SetOracleRouter",
         "inputs": [
             {
@@ -898,6 +1046,11 @@
     {
         "type": "error",
         "name": "BadDebtNotSettled",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "CallerNotCollateralVault",
         "inputs": []
     },
     {
@@ -1050,11 +1203,6 @@
     },
     {
         "type": "error",
-        "name": "ReceiverNotCollateralVault",
-        "inputs": []
-    },
-    {
-        "type": "error",
         "name": "Reentrancy",
         "inputs": []
     },
@@ -1090,7 +1238,17 @@
     },
     {
         "type": "error",
-        "name": "T_DebtMoreThanMin",
+        "name": "T_CallerNotSelf",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "T_DebtMoreThanMax",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "T_FeedDecimalsNotCorrect",
         "inputs": []
     },
     {
@@ -1101,6 +1259,16 @@
     {
         "type": "error",
         "name": "T_OperationDisabled",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "T_QuoteNotUSD",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "T_WithdrawMoreThanMax",
         "inputs": []
     },
     {

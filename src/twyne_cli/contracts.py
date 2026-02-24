@@ -90,6 +90,11 @@ def collateral_vault(address: str):
     return Contract(address, abi=_load_abi("CollateralVault"))
 
 
+def credit_vault(address: str):
+    """Get a credit/intermediate vault (EVault) instance at a given address."""
+    return Contract(address, abi=_load_abi("EVault"))
+
+
 def euler_oracle():
     """Get Euler oracle router contract instance."""
     return Contract(get_address("oracleRouter"), abi=_load_abi("EulerRouter"))
@@ -111,3 +116,46 @@ def intermediate_vaults() -> dict[str, str]:
     """Return dict of intermediate vault name → address."""
     addrs = _load_addresses()
     return addrs.get("intermediateVaults", {})
+
+
+def evc(address: str | None = None):
+    """Get EVC contract instance (Twyne EVC by default)."""
+    addr = address or get_address("evc")
+    return Contract(addr, abi=_load_abi("EVC"))
+
+
+def erc20(address: str):
+    """Get ERC20 contract instance at a given address."""
+    return Contract(address, abi=_load_abi("ERC20"))
+
+
+def leverage_operator(protocol: str = "euler"):
+    """Get leverage operator contract. Protocol: 'euler' or 'aave'."""
+    key = "eulerLeverageOperator" if protocol == "euler" else "aaveV3LeverageOperator"
+    return Contract(get_address(key), abi=_load_abi("LeverageOperator"))
+
+
+def deleverage_operator(protocol: str = "euler"):
+    """Get deleverage operator contract. Protocol: 'euler' or 'aave'."""
+    key = "eulerDeleverageOperator" if protocol == "euler" else "aaveV3DeleverageOperator"
+    return Contract(get_address(key), abi=_load_abi("DeleverageOperator"))
+
+
+def teleport_operator():
+    """Get Aave teleport operator contract."""
+    return Contract(get_address("aaveV3TeleportOperator"), abi=_load_abi("TeleportOperator"))
+
+
+def euler_wrapper():
+    """Get Euler wrapper contract for credit vault deposits."""
+    return Contract(get_address("eulerWrapper"), abi=_load_abi("EulerWrapper"))
+
+
+def aave_wrapper():
+    """Get Aave wrapper contract for credit vault deposits."""
+    return Contract(get_address("aaveV3Wrapper"), abi=_load_abi("AaveWrapper"))
+
+
+def aave_atoken_wrapper():
+    """Get Aave aToken wrapper contract."""
+    return Contract(get_address("aWSTETHWrapper"), abi=_load_abi("AaveATokenWrapper"))
