@@ -124,6 +124,11 @@ def evc(address: str | None = None):
     return Contract(addr, abi=_load_abi("EVC"))
 
 
+def euler_evc():
+    """Get the Euler EVC contract instance."""
+    return Contract(get_address("eulerEvc"), abi=_load_abi("EVC"))
+
+
 def erc20(address: str):
     """Get ERC20 contract instance at a given address."""
     return Contract(address, abi=_load_abi("ERC20"))
@@ -159,3 +164,33 @@ def aave_wrapper():
 def aave_atoken_wrapper():
     """Get Aave aToken wrapper contract."""
     return Contract(get_address("aWSTETHWrapper"), abi=_load_abi("AaveATokenWrapper"))
+
+
+def resolve_euler_factory_vault(address: str) -> str | None:
+    """For Euler IVs, the factory expects the collateral asset (eVault share token).
+
+    Queries IV.asset() on-chain to get the eVault share token address.
+    Returns None if the call fails (address may already be correct).
+    """
+    try:
+        iv = credit_vault(address)
+        collateral_asset = str(iv.asset())
+        if collateral_asset and collateral_asset != address:
+            return collateral_asset
+    except Exception:
+        pass
+    return None
+
+
+def resolve_aave_factory_vault(address: str) -> str | None:
+    """If address is a known Aave IV, return the aToken wrapper the factory expects.
+
+    Returns None if no mapping exists (address is already correct or unknown).
+    """
+    addrs = _load_addresses()
+    mapping = addrs.get("aaveIVToFactoryVault", {})
+    addr_lower = address.lower()
+    for iv, wrapper in mapping.items():
+        if iv.lower() == addr_lower:
+            return wrapper
+    return None

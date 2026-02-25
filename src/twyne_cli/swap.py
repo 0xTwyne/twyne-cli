@@ -1,10 +1,95 @@
-"""1inch swap API integration for operator actions (leverage/deleverage)."""
+"""Swap API integrations for operator actions (leverage/deleverage).
+
+Includes:
+- Euler Swap API client (for deleverage operator Swapper multicall data)
+- 1inch Swap API client (legacy, for direct swaps)
+"""
 
 import time
 
 import httpx
 
 from .constants import ONEINCH_API_BASE, ONEINCH_CHAIN_ID
+
+# --------------------------------------------------------------------------- #
+# Euler Swap API (for deleverage operator)
+# --------------------------------------------------------------------------- #
+
+EULER_SWAP_API_URL = "https://swap.euler.finance"
+
+
+def get_swap_quote(
+    chain_id: int,
+    token_in: str,
+    token_out: str,
+    amount: int,
+    receiver: str,
+    origin: str,
+    slippage: float = 1.0,
+    deadline: int = 0,
+    mode: int = 0,  # 0=EXACT_IN
+    account_in: str = "0x" + "0" * 40,
+    account_out: str = "0x" + "0" * 40,
+    vault_in: str = "0x" + "0" * 40,
+) -> dict:
+    """Call Euler Swap API and return swap quote with pre-built Swapper calldata.
+
+    Args:
+        chain_id: Chain ID (1 for mainnet).
+        token_in: Address of token to sell (e.g. WETH).
+        token_out: Address of token to buy (e.g. USDC).
+        amount: Amount of token_in in raw units.
+        receiver: Address that receives the swapped tokens (deleverage operator).
+        origin: EOA that initiated the transaction.
+        slippage: Slippage tolerance in percent (default 1.0 = 1%).
+        deadline: Unix timestamp deadline (default: 30 min from now).
+        mode: Swapper mode — 0=EXACT_IN, 1=EXACT_OUT, 2=TARGET_DEBT.
+        account_in: Sub-account for input (default: zero address).
+        account_out: Sub-account for output (default: zero address).
+        vault_in: Vault for input (default: zero address).
+
+    Returns:
+        Parsed swap data dict from the API response.
+    """
+    if deadline == 0:
+        deadline = int(time.time()) + 1800  # 30 min default
+
+    params = {
+        "chainId": chain_id,
+        "tokenIn": token_in,
+        "tokenOut": token_out,
+        "amount": str(amount),
+        "receiver": receiver,
+        "origin": origin,
+        "accountIn": account_in,
+        "accountOut": account_out,
+        "vaultIn": vault_in,
+        "slippage": str(slippage),
+        "swapperMode": mode,
+        "deadline": deadline,
+        "isRepay": False,
+        "targetDebt": "0",
+        "currentDebt": "0",
+    }
+
+    resp = httpx.get(f"{EULER_SWAP_API_URL}/swap", params=params, timeout=30)
+    resp.raise_for_status()
+    return resp.json()["data"]
+
+
+def extract_multicall_data(quote: dict) -> list[bytes]:
+    """Extract the swapData[] bytes array from a swap quote response.
+
+    The Euler Swap API returns multicallItems where each item has a 'data' field
+    containing hex-encoded Swapper function calldata. These are passed directly
+    to DeleverageOperator.executeDeleverage() as the swapData[] parameter.
+    """
+    return [bytes.fromhex(item["data"][2:]) for item in quote["swap"]["multicallItems"]]
+
+
+# --------------------------------------------------------------------------- #
+# 1inch Swap API (legacy)
+# --------------------------------------------------------------------------- #
 
 
 class SwapClient:

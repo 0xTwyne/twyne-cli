@@ -7,11 +7,12 @@ from ape import networks
 class TwyneContext:
     """Shared context passed to all subcommands."""
 
-    def __init__(self, rpc_url: str | None, force_json: bool, block: int | None, no_cache: bool = False):
+    def __init__(self, rpc_url: str | None, force_json: bool, block: int | None, no_cache: bool = False, verbose: bool = False):
         self.rpc_url = rpc_url
         self.force_json = force_json
         self.block = block
         self.no_cache = no_cache
+        self.verbose = verbose
         self._provider_ctx = None
 
     def connect(self):
@@ -22,7 +23,7 @@ class TwyneContext:
         """
         # Suppress ape's INFO logging (uses ClickHandler → stdout, breaks JSON pipe)
         from ape.logging import logger as ape_logger
-        ape_logger.set_level("WARNING")
+        ape_logger.set_level("DEBUG" if self.verbose else "WARNING")
 
         if self.rpc_url:
             self._provider_ctx = networks.ethereum.mainnet.use_provider(
