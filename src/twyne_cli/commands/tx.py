@@ -19,11 +19,13 @@ from ..contracts import (
     resolve_aave_factory_vault,
     resolve_euler_factory_vault,
     teleport_operator,
+    vault_manager,
 )
 from ..contracts import (
     evc as evc_contract,
 )
 from ..formatting import format_address
+from ..swap import extract_multicall_data, get_swap_quote
 from ..transactions import (
     confirm_prompt,
     display_receipt,
@@ -912,15 +914,19 @@ def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage, api_k
               help="Protocol integration to use")
 @click.option("--slippage", type=float, default=DEFAULT_SLIPPAGE,
               help=f"Swap slippage tolerance (default: {DEFAULT_SLIPPAGE}%)")
-@click.option("--api-key", envvar="ONEINCH_API_KEY", default=None,
-              help="1inch API key (or set ONEINCH_API_KEY env var)")
+@click.option("--max-debt", type=int, default=0,
+              help="Max remaining debt after deleverage (default: 0 = repay all)")
+@click.option("--withdraw", "withdraw_amount", default=None,
+              help="Collateral to withdraw (raw units; default: same as flash loan amount)")
 @tx_options
 @pass_ctx
-def deleverage(ctx: TwyneContext, vault_address, amount, protocol, slippage, api_key,
-               account_alias, private_key, dry_run, skip_confirm, raw):
-    """Execute deleverage via flash loan + 1inch swap.
+def deleverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
+               max_debt, withdraw_amount,
+               account_alias, private_key, dry_run, skip_confirm, raw, **_):
+    """Execute deleverage via flash loan + Euler swap.
 
-    Repays debt, withdraws collateral, swaps to debt token — all atomically.
+    Flash loans collateral, swaps to debt token, repays debt, withdraws collateral.
+    Uses the Euler Swap API for swap routing.
     """
     ctx.connect()
     try:
@@ -929,18 +935,43 @@ def deleverage(ctx: TwyneContext, vault_address, amount, protocol, slippage, api
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
 
+        # Derive token addresses for swap
+        target_asset_addr = str(cv.targetAsset())
+        asset_addr = str(cv.asset())
+        underlying_addr = str(credit_vault(asset_addr).asset())
+
         op = deleverage_operator(protocol)
+
+        # Default withdraw amount = flash loan amount
+        raw_withdraw = int(withdraw_amount) if withdraw_amount else raw_amount
+
+        # Get swap data from Euler Swap API
+        quote = get_swap_quote(
+            chain_id=1,
+            token_in=underlying_addr,
+            token_out=target_asset_addr,
+            amount=raw_amount,
+            receiver=str(op.address),
+            origin=str(account.address),
+            slippage=slippage,
+        )
+        swap_data = extract_multicall_data(quote)
 
         details = [
             ("Vault", vault_address),
             ("Protocol", protocol),
-            ("Amount", f"{amount} (raw: {raw_amount})"),
+            ("Flash loan amount", f"{amount} (raw: {raw_amount})"),
+            ("Max remaining debt", str(max_debt)),
+            ("Withdraw amount", str(raw_withdraw)),
             ("Slippage", f"{slippage}%"),
             ("Operator", str(op.address)),
             ("Sender", str(account.address)),
         ]
 
-        sim = simulate_tx(op, "executeDeleverage", [vault_address, raw_amount, b""], sender=account)
+        # 5-param interface: (collateralVault, flashloanAmount, maxDebt, withdrawCollateralAmount, swapData[])
+        deleverage_args = [vault_address, raw_amount, max_debt, raw_withdraw, swap_data]
+
+        sim = simulate_tx(op, "executeDeleverage", deleverage_args, sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
             _show_verbose_error(ctx, sim)
@@ -950,11 +981,12 @@ def deleverage(ctx: TwyneContext, vault_address, amount, protocol, slippage, api
             click.echo("Dry run — simulation passed.")
             return
 
+        gas_kwargs = _build_gas_kwargs(**_)
         if not confirm_prompt(f"Deleverage {amount} on {format_address(vault_address)}", details, skip_confirm):
             click.echo("Cancelled.")
             return
 
-        receipt = op.executeDeleverage(vault_address, raw_amount, b"", sender=account)
+        receipt = _send_tx(op.executeDeleverage, deleverage_args, account, gas_kwargs)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -1028,6 +1060,201 @@ def teleport(ctx: TwyneContext, vault_address, target_vault_address, protocol,
 
             receipt = op.executeTeleport(vault_address, target_vault_address, sender=account)
 
+        display_receipt(receipt)
+    finally:
+        ctx.disconnect()
+
+
+# --------------------------------------------------------------------------- #
+# Close-position command (deleverage entire position via EVC batch)
+# --------------------------------------------------------------------------- #
+
+
+def _build_close_position_batch(
+    evc_instance, cv_instance, operator, vault_address: str,
+    flashloan_amount: int, max_debt: int, withdraw_collateral_amount: int,
+    swap_data: list[bytes], sender: str, min_liq_ltv: int,
+) -> list[tuple]:
+    """Build EVC batch: enable operator -> lower liqLTV -> deleverage -> disable operator.
+
+    When liqLTV > external LTV, credit is reserved from the intermediate vault.
+    Even after external debt is repaid, this credit reservation blocks withdrawal.
+    Lowering liqLTV to the minimum releases the reserved credit, enabling full withdrawal.
+    All vault status checks are deferred to the end of the EVC batch.
+
+    Per the EVC spec, EVC self-calls (setAccountOperator) use onBehalfOfAccount=zeroAddress.
+    CV calls and operator calls use onBehalfOfAccount=sender.
+    """
+    from ..constants import ZERO_ADDRESS
+
+    items = []
+
+    # Item 1: Enable operator (EVC self-call → onBehalfOfAccount = zero)
+    enable_data = evc_instance.setAccountOperator.encode_input(
+        sender, str(operator.address), True
+    )
+    items.append((str(evc_instance.address), ZERO_ADDRESS, 0, enable_data))
+
+    # Item 2: Lower liqLTV to release credit reservation from intermediate vault.
+    # This calls _handleExcessCredit() inside the CV, returning reserved credit to the IV
+    # and increasing maxWithdraw so the deleverage operator can withdraw all collateral.
+    set_ltv_data = cv_instance.setTwyneLiqLTV.encode_input(min_liq_ltv)
+    items.append((vault_address, sender, 0, set_ltv_data))
+
+    # Item 3: Execute deleverage (operator call → onBehalfOfAccount = sender)
+    deleverage_data = operator.executeDeleverage.encode_input(
+        vault_address, flashloan_amount, max_debt, withdraw_collateral_amount, swap_data
+    )
+    items.append((str(operator.address), sender, 0, deleverage_data))
+
+    # Item 4: Disable operator (EVC self-call → onBehalfOfAccount = zero)
+    disable_data = evc_instance.setAccountOperator.encode_input(
+        sender, str(operator.address), False
+    )
+    items.append((str(evc_instance.address), ZERO_ADDRESS, 0, disable_data))
+
+    return items
+
+
+@operators.command(name="close-position")
+@click.argument("vault_address")
+@click.option("--slippage", type=float, default=1.0,
+              help="Swap slippage tolerance in percent (default: 1.0%)")
+@click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
+              help="Protocol integration to use")
+@tx_options
+@pass_ctx
+def close_position(ctx: TwyneContext, vault_address, slippage, protocol,
+                   account_alias, private_key, dry_run, skip_confirm, **_):
+    """Close an entire position by selling collateral to repay debt.
+
+    Uses the deleverage operator with a flash loan + swap to atomically
+    repay all debt, withdraw all collateral, and return remaining tokens.
+
+    VAULT_ADDRESS: The collateral vault to close.
+    """
+    ctx.connect()
+    try:
+        account = resolve_account(account_alias, private_key)
+        cv = collateral_vault(vault_address)
+
+        # 1. Read vault state
+        total_assets = cv.totalAssetsDepositedOrReserved()
+        max_release = cv.maxRelease()
+        borrower_collateral = total_assets - max_release  # user's own collateral
+        max_repay = cv.maxRepay()  # current debt in target asset units
+
+        if max_repay == 0:
+            click.echo("No debt to repay. Use 'withdraw' instead.")
+            return
+
+        # 2. Derive token addresses
+        target_asset_addr = str(cv.targetAsset())
+        target_vault_addr = str(cv.targetVault())
+        asset_addr = str(cv.asset())  # eVault share token (e.g. eWETH)
+        evault = credit_vault(asset_addr)
+        underlying_addr = str(evault.asset())  # underlying (e.g. WETH)
+
+        underlying_token = erc20(underlying_addr)
+        underlying_symbol = underlying_token.symbol()
+        underlying_decimals = underlying_token.decimals()
+        target_token = erc20(target_asset_addr)
+        target_symbol = target_token.symbol()
+        target_decimals = target_token.decimals()
+
+        # 3. Convert eVault shares to underlying amount for flash loan.
+        # totalAssetsDepositedOrReserved and maxRelease are in eVault share units.
+        # The deleverage operator's flashloanAmount is in underlying (e.g. WETH) units,
+        # but withdrawCollateralAmount is in eVault share units (passed to redeemUnderlying).
+        underlying_amount = evault.convertToAssets(borrower_collateral)
+
+        # 4. Calculate deleverage parameters
+        flashloan_amount = underlying_amount      # underlying units (WETH) for Morpho flash loan
+        max_debt = 0                               # close entirely — require zero remaining debt
+        # Use type(uint256).max sentinel: redeemUnderlying treats this as "withdraw maxWithdraw"
+        # at execution time. Pre-calculating the exact amount fails due to interest accrual
+        # between simulation and execution blocks shifting maxRelease().
+        withdraw_collateral_amount = 2**256 - 1
+
+        # 5. Compute minimum liqLTV to release credit reservation before withdrawal.
+        # When liqLTV > extLiqLTV * buffer / MAXFACTOR, credit is reserved from the IV.
+        # Lowering liqLTV to the minimum releases all credit, allowing full withdrawal.
+        # Min liqLTV = ceil(extLiqLTV * buffer / MAXFACTOR)
+        # NOTE: The deployed VaultManager maps externalLiqBuffers and maxTwyneLTVs
+        # by collateral asset address (eVault share token), not by IV address.
+        vm = vault_manager()
+        ext_liq_buffer = vm.externalLiqBuffers(asset_addr)
+        target_evault = credit_vault(target_vault_addr)
+        ext_liq_ltv = target_evault.LTVLiquidation(asset_addr)
+        from ..constants import MAXFACTOR
+        min_liq_ltv = (ext_liq_ltv * ext_liq_buffer + MAXFACTOR - 1) // MAXFACTOR  # ceil division
+
+        # 5. Get swap data from Euler Swap API
+        op = deleverage_operator(protocol)
+        quote = get_swap_quote(
+            chain_id=1,
+            token_in=underlying_addr,
+            token_out=target_asset_addr,
+            amount=flashloan_amount,
+            receiver=str(op.address),
+            origin=str(account.address),
+            slippage=slippage,
+        )
+        # Frontend uses [swapperData] — single element wrapping the full swapper calldata
+        swapper_data_hex = quote["swap"]["swapperData"]
+        swap_data = [bytes.fromhex(swapper_data_hex[2:])] if swapper_data_hex != "0x" else []
+
+        # 6. Display summary
+        human_collateral = underlying_amount / 10**underlying_decimals
+        human_debt = max_repay / 10**target_decimals
+        human_swap_out = int(quote["amountOutMin"]) / 10**target_decimals
+
+        click.echo(f"\nClose Position: {vault_address}")
+        click.echo(f"  Collateral:    {human_collateral:.6f} {underlying_symbol}")
+        click.echo(f"  Debt:          {human_debt:.6f} {target_symbol}")
+        click.echo(f"  Swap output:   ~{human_swap_out:.6f} {target_symbol} (min, after {slippage}% slippage)")
+
+        current_liq_ltv = cv.twyneLiqLTV()
+        click.echo(f"  LiqLTV:        {current_liq_ltv / MAXFACTOR * 100:.2f}% -> {min_liq_ltv / MAXFACTOR * 100:.2f}% (lowered to release credit)")
+
+        details = [
+            ("Vault", vault_address),
+            ("Protocol", protocol),
+            ("Operator", str(op.address)),
+            ("Flash loan", f"{human_collateral:.6f} {underlying_symbol}"),
+            ("Debt to repay", f"{human_debt:.6f} {target_symbol}"),
+            ("Max remaining debt", "0 (full close)"),
+            ("LiqLTV change", f"{current_liq_ltv / MAXFACTOR * 100:.2f}% -> {min_liq_ltv / MAXFACTOR * 100:.2f}%"),
+            ("Slippage", f"{slippage}%"),
+            ("Sender", str(account.address)),
+        ]
+
+        # 7. Build EVC batch
+        evc_instance = evc_contract()
+        batch_items = _build_close_position_batch(
+            evc_instance, cv, op, vault_address,
+            flashloan_amount, max_debt, withdraw_collateral_amount,
+            swap_data, str(account.address), min_liq_ltv,
+        )
+
+        # 7. Simulate batch
+        sim = simulate_tx(evc_instance, "batch", [batch_items], sender=account)
+        if not sim["success"]:
+            click.echo(f"\nBatch simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
+            raise SystemExit(1)
+
+        if dry_run:
+            click.echo("Dry run — simulation passed.")
+            return
+
+        # 8. Confirm and execute
+        gas_kwargs = _build_gas_kwargs(**_)
+        if not confirm_prompt(f"Close position {format_address(vault_address)}", details, skip_confirm):
+            click.echo("Cancelled.")
+            return
+
+        receipt = _send_tx(evc_instance.batch, [batch_items], account, gas_kwargs)
         display_receipt(receipt)
     finally:
         ctx.disconnect()

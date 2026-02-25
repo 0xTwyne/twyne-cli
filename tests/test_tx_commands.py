@@ -629,3 +629,231 @@ class TestOpenPosition:
         assert result.exit_code != 0
         assert "Insufficient WETH balance" in result.stderr
         assert "wrap eth" in result.stderr.lower()
+
+
+# --------------------------------------------------------------------------- #
+# Close-position command tests (mocked — no Anvil needed)
+# --------------------------------------------------------------------------- #
+
+FAKE_UNDERLYING = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+FAKE_TARGET_ASSET = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+FAKE_ASSET_EVAULT = "0x8888888888888888888888888888888888888888"
+FAKE_TARGET_VAULT = "0x9999999999999999999999999999999999999999"
+FAKE_OPERATOR_ADDR = "0x36b2Bd4E17827E9dEABdB3AD520AC597972196D4"
+FAKE_EVC_ADDR = "0xef39D6493884C4C84D38a4bFF879Ce16CEdE702a"
+FAKE_IV_ADDR = "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+FAKE_VM_ADDR = "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+
+FAKE_SWAP_QUOTE = {
+    "swap": {
+        "swapperData": "0xdeadbeef01020304cafebabe05060708",
+        "multicallItems": [
+            {"data": "0xdeadbeef01020304"},
+            {"data": "0xcafebabe05060708"},
+        ],
+    },
+    "amountIn": "1000000000000000000",
+    "amountOut": "2500000000",
+    "amountOutMin": "2475000000",
+}
+
+
+def _mock_cv_for_close(address):
+    """Return a mock CollateralVault with state for close-position."""
+    mock = MagicMock()
+    mock.totalAssetsDepositedOrReserved.return_value = 2_000_000_000_000_000_000  # 2e18
+    mock.maxRelease.return_value = 500_000_000_000_000_000  # 0.5e18
+    mock.maxRepay.return_value = 1_500_000_000  # 1500 USDC (6 decimals)
+    mock.targetAsset.return_value = FAKE_TARGET_ASSET
+    mock.targetVault.return_value = FAKE_TARGET_VAULT
+    mock.asset.return_value = FAKE_ASSET_EVAULT
+    mock.intermediateVault.return_value = FAKE_IV_ADDR
+    mock.twyneVaultManager.return_value = FAKE_VM_ADDR
+    mock.twyneLiqLTV.return_value = 8500  # 85% in basis points
+    return mock
+
+
+def _mock_credit_vault_for_close(address):
+    """Return a mock credit vault (EVault).
+
+    Handles both the eVault share token (asset()) and the target vault (LTVLiquidation).
+    """
+    mock = MagicMock()
+    if address == FAKE_TARGET_VAULT:
+        # Target EVault — provides external liquidation LTV
+        mock.LTVLiquidation.return_value = 7500  # 75% external liq LTV
+        return mock
+    # eVault share token — provides underlying asset and share conversion
+    mock.asset.return_value = FAKE_UNDERLYING
+    mock.convertToAssets.side_effect = lambda shares: shares  # 1:1 ratio
+    return mock
+
+
+def _mock_erc20_for_close(address):
+    """Return a mock ERC20 with decimals and symbol for WETH or USDC."""
+    mock = MagicMock()
+    if address == FAKE_UNDERLYING:
+        mock.decimals.return_value = 18
+        mock.symbol.return_value = "WETH"
+    elif address == FAKE_TARGET_ASSET:
+        mock.decimals.return_value = 6
+        mock.symbol.return_value = "USDC"
+    else:
+        mock.decimals.return_value = 18
+        mock.symbol.return_value = "TOKEN"
+    return mock
+
+
+class TestClosePosition:
+    """CliRunner tests for `twyne tx operators close-position`."""
+
+    def test_close_position_help(self):
+        """--help shows vault_address, --slippage, --protocol."""
+        from twyne_cli.cli import cli
+        runner = CliRunner()
+        result = runner.invoke(cli, ["tx", "operators", "close-position", "--help"])
+        assert result.exit_code == 0
+        assert "VAULT_ADDRESS" in result.output
+        assert "--slippage" in result.output
+        assert "--protocol" in result.output
+
+    @patch("twyne_cli.commands.tx.collateral_vault")
+    @patch("twyne_cli.commands.tx.resolve_account")
+    def test_close_position_no_debt(self, mock_resolve, mock_cv):
+        """Vault with 0 debt prints 'No debt to repay'."""
+        from twyne_cli.cli import cli
+
+        mock_resolve.return_value = MagicMock(address="0xSENDER")
+        cv_mock = MagicMock()
+        cv_mock.totalAssetsDepositedOrReserved.return_value = 1_000_000_000_000_000_000
+        cv_mock.maxRelease.return_value = 0
+        cv_mock.maxRepay.return_value = 0  # No debt
+        mock_cv.return_value = cv_mock
+
+        runner = CliRunner()
+        with patch("twyne_cli.context.TwyneContext.connect"), \
+             patch("twyne_cli.context.TwyneContext.disconnect"):
+            result = runner.invoke(cli, [
+                "tx", "operators", "close-position",
+                "0xVAULT",
+                "--private-key", "deadbeef" * 8,
+            ])
+        assert result.exit_code == 0
+        assert "No debt to repay" in result.output
+
+    @patch("twyne_cli.commands.tx.simulate_tx")
+    @patch("twyne_cli.commands.tx.evc_contract")
+    @patch("twyne_cli.commands.tx.get_swap_quote", return_value=FAKE_SWAP_QUOTE)
+    @patch("twyne_cli.commands.tx.deleverage_operator")
+    @patch("twyne_cli.commands.tx.vault_manager")
+    @patch("twyne_cli.commands.tx.erc20", side_effect=_mock_erc20_for_close)
+    @patch("twyne_cli.commands.tx.credit_vault", side_effect=_mock_credit_vault_for_close)
+    @patch("twyne_cli.commands.tx.collateral_vault", side_effect=_mock_cv_for_close)
+    @patch("twyne_cli.commands.tx.resolve_account")
+    def test_close_position_dry_run(
+        self, mock_resolve, mock_cv, mock_credit, mock_erc20_fn,
+        mock_vm, mock_delev_op, mock_swap_quote,
+        mock_evc, mock_sim_tx,
+    ):
+        """Reads vault state, calls swap API, simulates batch, shows summary."""
+        from twyne_cli.cli import cli
+
+        mock_resolve.return_value = MagicMock(address="0xSENDER")
+        mock_delev_op.return_value = MagicMock(address=FAKE_OPERATOR_ADDR)
+        mock_evc.return_value = MagicMock(address=FAKE_EVC_ADDR)
+        mock_vm.return_value = MagicMock(**{"externalLiqBuffers.return_value": 9500})  # 95% buffer
+        mock_sim_tx.return_value = {"success": True}
+
+        runner = CliRunner()
+        with patch("twyne_cli.context.TwyneContext.connect"), \
+             patch("twyne_cli.context.TwyneContext.disconnect"):
+            result = runner.invoke(cli, [
+                "tx", "operators", "close-position",
+                "0xVAULT",
+                "--slippage", "1.0",
+                "--dry-run",
+                "--private-key", "deadbeef" * 8,
+            ])
+        assert result.exit_code == 0, result.output
+        assert "Close Position" in result.output
+        assert "WETH" in result.output
+        assert "USDC" in result.output
+        assert "Dry run" in result.output
+        mock_swap_quote.assert_called_once()
+
+    @patch("twyne_cli.commands.tx.simulate_tx")
+    @patch("twyne_cli.commands.tx.evc_contract")
+    @patch("twyne_cli.commands.tx.get_swap_quote", return_value=FAKE_SWAP_QUOTE)
+    @patch("twyne_cli.commands.tx.deleverage_operator")
+    @patch("twyne_cli.commands.tx.vault_manager")
+    @patch("twyne_cli.commands.tx.erc20", side_effect=_mock_erc20_for_close)
+    @patch("twyne_cli.commands.tx.credit_vault", side_effect=_mock_credit_vault_for_close)
+    @patch("twyne_cli.commands.tx.collateral_vault", side_effect=_mock_cv_for_close)
+    @patch("twyne_cli.commands.tx.resolve_account")
+    def test_close_position_batch_structure(
+        self, mock_resolve, mock_cv, mock_credit, mock_erc20_fn,
+        mock_vm, mock_delev_op, mock_swap_quote,
+        mock_evc, mock_sim_tx,
+    ):
+        """Batch has 4 items: enable operator -> set liqLTV -> deleverage -> disable operator."""
+        from twyne_cli.cli import cli
+
+        mock_resolve.return_value = MagicMock(address="0xSENDER")
+        mock_delev_op.return_value = MagicMock(address=FAKE_OPERATOR_ADDR)
+        evc_mock = MagicMock(address=FAKE_EVC_ADDR)
+        mock_evc.return_value = evc_mock
+        mock_vm.return_value = MagicMock(**{"externalLiqBuffers.return_value": 9500})
+        mock_sim_tx.return_value = {"success": True}
+
+        runner = CliRunner()
+        with patch("twyne_cli.context.TwyneContext.connect"), \
+             patch("twyne_cli.context.TwyneContext.disconnect"):
+            result = runner.invoke(cli, [
+                "tx", "operators", "close-position",
+                "0xVAULT",
+                "--dry-run",
+                "--private-key", "deadbeef" * 8,
+            ])
+        assert result.exit_code == 0, result.output
+
+        # Verify batch was simulated with 4 items:
+        # enable operator, setTwyneLiqLTV, deleverage, disable operator
+        mock_sim_tx.assert_called_once()
+        call_args = mock_sim_tx.call_args
+        batch_items = call_args[0][2][0]  # args[2] = [batch_items]
+        assert len(batch_items) == 4
+
+    @patch("twyne_cli.commands.tx.simulate_tx")
+    @patch("twyne_cli.commands.tx.evc_contract")
+    @patch("twyne_cli.commands.tx.get_swap_quote", return_value=FAKE_SWAP_QUOTE)
+    @patch("twyne_cli.commands.tx.deleverage_operator")
+    @patch("twyne_cli.commands.tx.vault_manager")
+    @patch("twyne_cli.commands.tx.erc20", side_effect=_mock_erc20_for_close)
+    @patch("twyne_cli.commands.tx.credit_vault", side_effect=_mock_credit_vault_for_close)
+    @patch("twyne_cli.commands.tx.collateral_vault", side_effect=_mock_cv_for_close)
+    @patch("twyne_cli.commands.tx.resolve_account")
+    def test_close_position_simulation_failure(
+        self, mock_resolve, mock_cv, mock_credit, mock_erc20_fn,
+        mock_vm, mock_delev_op, mock_swap_quote,
+        mock_evc, mock_sim_tx,
+    ):
+        """Batch sim failure exits 1."""
+        from twyne_cli.cli import cli
+
+        mock_resolve.return_value = MagicMock(address="0xSENDER")
+        mock_delev_op.return_value = MagicMock(address=FAKE_OPERATOR_ADDR)
+        mock_evc.return_value = MagicMock(address=FAKE_EVC_ADDR)
+        mock_vm.return_value = MagicMock(**{"externalLiqBuffers.return_value": 9500})
+        mock_sim_tx.return_value = {"success": False, "error": "InsufficientCollateral"}
+
+        runner = CliRunner()
+        with patch("twyne_cli.context.TwyneContext.connect"), \
+             patch("twyne_cli.context.TwyneContext.disconnect"):
+            result = runner.invoke(cli, [
+                "tx", "operators", "close-position",
+                "0xVAULT",
+                "--private-key", "deadbeef" * 8,
+            ])
+        assert result.exit_code != 0
+        assert "Batch simulation failed" in result.output
+        assert "InsufficientCollateral" in result.output
