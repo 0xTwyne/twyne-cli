@@ -118,7 +118,7 @@
                 "internalType": "enum VaultType"
             },
             {
-                "name": "_asset",
+                "name": "_intermediateVault",
                 "type": "address",
                 "internalType": "address"
             },

@@ -54,6 +54,20 @@ def parse_amount(value: str, decimals: int, raw: bool = False) -> int:
     return int(integer_part + frac_part)
 
 
+def _format_error_details(e: ContractLogicError) -> dict:
+    """Extract structured debug info from a ContractLogicError."""
+    info = {"error": str(e)}
+    if getattr(e, "revert_message", None):
+        info["revert_message"] = e.revert_message
+    if getattr(e, "dev_message", None):
+        info["dev_message"] = e.dev_message
+    if getattr(e, "contract_address", None):
+        info["contract_address"] = str(e.contract_address)
+    if getattr(e, "source_traceback", None):
+        info["source_traceback"] = str(e.source_traceback)
+    return info
+
+
 def simulate_tx(contract, fn_name: str, args: list, sender=None) -> dict:
     """Simulate a transaction via eth_call. Returns gas estimate or raises on revert."""
     fn = getattr(contract, fn_name)
@@ -61,23 +75,71 @@ def simulate_tx(contract, fn_name: str, args: list, sender=None) -> dict:
         result = fn.call(*args, sender=sender)
         return {"success": True, "result": result}
     except ContractLogicError as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, **_format_error_details(e)}
+    except Exception as e:
+        # Ape's trace enrichment can crash (e.g. ValueError in _enrich_calldata)
+        # before ContractLogicError is raised. Catch broadly to surface the revert.
+        msg = f"execution reverted (detail unavailable: {type(e).__name__}: {e})"
+        return {"success": False, "error": msg}
 
 
-def execute_through_evc(contract, fn_name: str, args: list, sender):
+def simulate_through_evc(contract, fn_name: str, args: list, sender) -> dict:
+    """Simulate a contract call routed through the Twyne EVC (eth_call).
+
+    Same routing as execute_through_evc but read-only. Required for contracts
+    with callThroughEVC modifier (CollateralVault, CollateralVaultFactory).
+    Direct eth_call may work for simple cases but fails when initialization
+    logic requires proper EVC authentication context (e.g., Aave vaults).
+    """
+    from .contracts import evc as evc_contract
+
+    evc_instance = evc_contract()
+    calldata = getattr(contract, fn_name).encode_input(*args)
+    evc_call_fn = getattr(evc_instance, "call")
+    try:
+        result = evc_call_fn.call(
+            str(contract.address), str(sender.address), 0, calldata, sender=sender,
+        )
+        return {"success": True, "result": result}
+    except ContractLogicError as e:
+        return {"success": False, **_format_error_details(e)}
+    except Exception as e:
+        msg = f"execution reverted (detail unavailable: {type(e).__name__}: {e})"
+        return {"success": False, "error": msg}
+
+
+def execute_through_evc(contract, fn_name: str, args: list, sender, **gas_kwargs):
     """Execute a contract function routed through the Twyne EVC.
 
     Twyne contracts with the callThroughEVC modifier (CollateralVault,
     CollateralVaultFactory) require msg.sender == EVC. Direct calls revert
     with EVC_EmptyError. This helper encodes the calldata and routes it
     via evc.call() using the Twyne EVC (not Euler's EVC).
+
+    Accepts optional gas_kwargs: max_priority_fee, gas (gas limit).
+    Internal key _gas_multiplier is handled automatically.
     """
     from .contracts import evc as evc_contract
 
+    # Filter internal keys and apply gas multiplier if present
+    extra = {k: v for k, v in gas_kwargs.items() if k != "_gas_multiplier"}
+    multiplier = gas_kwargs.get("_gas_multiplier")
+
     evc_instance = evc_contract()  # Uses Twyne EVC from address registry
     calldata = getattr(contract, fn_name).encode_input(*args)
+
+    if multiplier is not None:
+        try:
+            estimate = evc_instance.call.estimate_gas_cost(
+                str(contract.address), str(sender.address), 0, calldata, sender=sender, **extra,
+            )
+            extra["gas"] = int(estimate * multiplier)
+        except Exception:
+            pass  # Fall back to ape-config.yaml defaults
+
     return evc_instance.call(
-        str(contract.address), str(sender.address), 0, calldata, sender=sender
+        str(contract.address), str(sender.address), 0, calldata,
+        sender=sender, **extra,
     )
 
 
@@ -124,6 +186,7 @@ def ensure_allowance(
     skip_confirm: bool = False,
     skip_approval: bool = False,
     max_approve: bool = False,
+    **gas_kwargs,
 ) -> bool:
     """Check token allowance and send approval tx if insufficient.
 
@@ -133,6 +196,8 @@ def ensure_allowance(
     Returns True if allowance is sufficient (already or after approval).
     Returns False if user declined the approval prompt.
     Raises click.UsageError if skip_approval=True and allowance is insufficient.
+
+    Accepts optional gas_kwargs: max_priority_fee, gas (gas limit).
     """
     from .contracts import erc20
 
@@ -170,7 +235,17 @@ def ensure_allowance(
     if not confirm_prompt("Token Approval", details, skip=skip_confirm):
         return False
 
-    receipt = token.approve(spender, approve_amount, sender=sender)
+    # Filter internal keys and apply gas multiplier if present
+    extra = {k: v for k, v in gas_kwargs.items() if k != "_gas_multiplier"}
+    multiplier = gas_kwargs.get("_gas_multiplier")
+    if multiplier is not None:
+        try:
+            estimate = token.approve.estimate_gas_cost(spender, approve_amount, sender=sender, **extra)
+            extra["gas"] = int(estimate * multiplier)
+        except Exception:
+            pass
+
+    receipt = token.approve(spender, approve_amount, sender=sender, **extra)
     click.echo("\nApproval Result:")
     click.echo("-" * 40)
     click.echo(format_receipt(receipt))

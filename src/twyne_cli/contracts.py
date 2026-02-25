@@ -161,6 +161,22 @@ def aave_atoken_wrapper():
     return Contract(get_address("aWSTETHWrapper"), abi=_load_abi("AaveATokenWrapper"))
 
 
+def resolve_euler_factory_vault(address: str) -> str | None:
+    """For Euler IVs, the factory expects the collateral asset (eVault share token).
+
+    Queries IV.asset() on-chain to get the eVault share token address.
+    Returns None if the call fails (address may already be correct).
+    """
+    try:
+        iv = credit_vault(address)
+        collateral_asset = str(iv.asset())
+        if collateral_asset and collateral_asset != address:
+            return collateral_asset
+    except Exception:
+        pass
+    return None
+
+
 def resolve_aave_factory_vault(address: str) -> str | None:
     """If address is a known Aave IV, return the aToken wrapper the factory expects.
 

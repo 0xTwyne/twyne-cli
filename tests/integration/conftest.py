@@ -36,8 +36,10 @@ VAULT_MANAGER_OWNER = "0x8C54cb62900Ec252E7992C85a5b7078A8AF4Fd7F"
 # Allowed target vaults (from VaultManager at block 24520000)
 # These are borrow-side vaults (USDC, USDT, WBTC) — NOT the collateral eWETH vault
 EULER_TARGET_VAULT = "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9"  # Euler USDC vault
+AAVE_V3_POOL = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"  # Aave V3 Pool (target vault for Aave)
 DEFAULT_LIQ_LTV = 9000  # 90% in basis points (must be > ~8700 for this pair)
-MAX_TWYNE_LTV = 9300  # 93% — governance max for this IV
+MAX_TWYNE_LTV = 9300  # 93% — governance max for this Euler IV
+MAX_AAVE_LTV = 9800  # 98% — governance max for Aave awstETH IV
 EXTERNAL_LIQ_BUFFER = 10000  # 100% (beta_safe = 1.0)
 TWYNE_EVC = "0xef39D6493884C4C84D38a4bFF879Ce16CEdE702a"
 EULER_EVC = "0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"
@@ -172,6 +174,63 @@ def _configure_vault_manager():
     }])
     r2 = _wait_for_receipt(tx2)
     assert r2["status"] == "0x1", f"setExternalLiqBuffer failed: {r2}"
+
+    _stop_impersonate(VAULT_MANAGER_OWNER)
+
+
+def _configure_aave_vault_manager():
+    """Configure VaultManager params for Aave awstETH IV at block 24520000.
+
+    Sets maxTwyneLTV, externalLiqBuffer, and allowedTargetAsset (WETH)
+    for the Aave intermediate vault. Mirrors the Foundry test setup in
+    AaveTestBase.t.sol (lines 120-124). Idempotent.
+    """
+    from eth_abi import encode as abi_encode
+
+    # Check if already configured
+    selector = bytes.fromhex("7b6b8447")  # maxTwyneLTVs(address)
+    call_data = selector + abi_encode(["address"], [AAVE_AWSTETH_IV])
+    result = _rpc_call("eth_call", [{"to": VAULT_MANAGER, "data": "0x" + call_data.hex()}, "latest"])
+    current_ltv = int(result, 16) if result else 0
+    if current_ltv == MAX_AAVE_LTV:
+        return  # Already configured
+
+    _set_balance(VAULT_MANAGER_OWNER, hex(10 * 10**18))
+    _impersonate(VAULT_MANAGER_OWNER)
+
+    # setMaxLiquidationLTV(address,uint16) — selector 0x950bc62a
+    calldata = bytes.fromhex("950bc62a") + abi_encode(
+        ["address", "uint16"], [AAVE_AWSTETH_IV, MAX_AAVE_LTV]
+    )
+    tx1 = _rpc_call("eth_sendTransaction", [{
+        "from": VAULT_MANAGER_OWNER, "to": VAULT_MANAGER,
+        "data": "0x" + calldata.hex(), "gas": hex(100_000),
+    }])
+    r1 = _wait_for_receipt(tx1)
+    assert r1["status"] == "0x1", f"setMaxLiquidationLTV (Aave) failed: {r1}"
+
+    # setExternalLiqBuffer(address,uint16) — selector 0xda7f7f80
+    calldata = bytes.fromhex("da7f7f80") + abi_encode(
+        ["address", "uint16"], [AAVE_AWSTETH_IV, EXTERNAL_LIQ_BUFFER]
+    )
+    tx2 = _rpc_call("eth_sendTransaction", [{
+        "from": VAULT_MANAGER_OWNER, "to": VAULT_MANAGER,
+        "data": "0x" + calldata.hex(), "gas": hex(100_000),
+    }])
+    r2 = _wait_for_receipt(tx2)
+    assert r2["status"] == "0x1", f"setExternalLiqBuffer (Aave) failed: {r2}"
+
+    # setAllowedTargetAsset(address,address,address) — selector 0xa21e8cb3
+    # Allows WETH as target asset for Aave awstETH IV + Aave V3 Pool
+    calldata = bytes.fromhex("a21e8cb3") + abi_encode(
+        ["address", "address", "address"], [AAVE_AWSTETH_IV, AAVE_V3_POOL, WETH]
+    )
+    tx3 = _rpc_call("eth_sendTransaction", [{
+        "from": VAULT_MANAGER_OWNER, "to": VAULT_MANAGER,
+        "data": "0x" + calldata.hex(), "gas": hex(100_000),
+    }])
+    r3 = _wait_for_receipt(tx3)
+    assert r3["status"] == "0x1", f"setAllowedTargetAsset (Aave) failed: {r3}"
 
     _stop_impersonate(VAULT_MANAGER_OWNER)
 
@@ -431,17 +490,16 @@ def _set_ltv_via_evc(sender_account, cv_address, ltv):
 
 
 # ---------------------------------------------------------------------------
-# Vault creation helper (bypasses CLI's stale v1 factory ABI)
+# Vault creation helper (low-level raw-RPC fixture for test setup)
 # ---------------------------------------------------------------------------
 
-# The deployed factory has been upgraded to v2 with a 5-arg signature:
-#   createCollateralVault(uint8 _categoryId, address _asset, address _targetVault,
-#                         uint256 _liqLTV, address _intermediateVault)
-# and requires callThroughEVC (calls must go through EVC.call()).
+# The deployed factory has a 5-arg signature:
+#   createCollateralVault(uint8 _vaultType, address _intermediateVault,
+#                         address _targetVault, uint256 _liqLTV, address _targetAsset)
+# and requires callThroughEVC (calls must go through EVC.batch()).
 #
-# The CLI's bundled CollateralVaultFactory.json has been updated to 5-arg ABI,
-# but the tx.py create-vault command still passes wrong args.
-# This helper uses raw RPC + eth_abi encoding to call the real v2 factory.
+# This raw-RPC helper is faster than invoking the CLI for fixture setup.
+# It uses eth_abi encoding to call the factory directly via EVC.batch().
 
 _FACTORY_SELECTOR = bytes.fromhex("3c7269d1")  # createCollateralVault(uint8,address,address,uint256,address)
 _EVC_CALL_SELECTOR = bytes.fromhex("1f8b5215")  # call(address,address,uint256,bytes)
@@ -552,10 +610,12 @@ def vault_manager_configured(ape_provider):
     At block 24520000, maxTwyneLTVs and externalLiqBuffers are 0 for all IVs.
     The IV supply cap is ~7 eWETH which gets exhausted by accumulated test deposits
     (no per-test state isolation). This fixture:
-    1. Sets VaultManager LTV params (impersonates VaultManager owner)
-    2. Increases IV supply cap to 100 eWETH (impersonates IV governor)
+    1. Sets Euler VaultManager LTV params (impersonates VaultManager owner)
+    2. Sets Aave VaultManager LTV params + allowedTargetAsset
+    3. Increases IV supply cap to 100 eWETH (impersonates IV governor)
     """
     _configure_vault_manager()
+    _configure_aave_vault_manager()
     _increase_iv_supply_cap()
     return True
 

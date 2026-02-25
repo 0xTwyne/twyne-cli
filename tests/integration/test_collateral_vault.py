@@ -40,9 +40,9 @@ from .conftest import (
 class TestCreateVault:
     """Test collateral vault creation via factory.
 
-    NOTE: The CLI's bundled CollateralVaultFactory ABI is stale (v1 with 3 args).
-    The deployed factory requires 5 args + EVC callthrough. Tests below document
-    which operations work and which expose CLI bugs.
+    Uses the raw-RPC _create_vault_via_evc() helper for fast fixture setup.
+    The factory requires 5 args + EVC callthrough. See also
+    test_factory_batch_ops.py::TestCreateVaultCLICommand for CLI-level tests.
     """
 
     def test_create_vault_via_evc_helper(self, test_account):

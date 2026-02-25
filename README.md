@@ -107,8 +107,11 @@ twyne tx operators teleport <vault> <target-vault> [--protocol euler|aave]
 #### Factory
 
 ```bash
-twyne tx factory create-vault <asset-address> <target-vault> [--vault-type 0|1] [--ltv <bps>] [--target-asset <addr>]
+twyne tx factory create-vault <intermediate-vault> <target-vault> [--vault-type 0|1] [--ltv <bps>] [--target-asset <addr>]
+twyne tx factory open-position <intermediate-vault> <target-vault> --deposit <amount> [--borrow <amount>] [--vault-type 0|1] [--ltv <bps>] [--target-asset <addr>]
 ```
+
+`open-position` atomically creates a collateral vault, deposits collateral, and optionally borrows in a single EVC batch. The vault address is predicted via simulation. `--deposit` specifies the underlying token amount (e.g. wstETH, not ewstETH). For Euler vaults, the intermediate vault address is auto-resolved to the collateral asset the factory expects.
 
 #### EVC batch execution
 
@@ -118,6 +121,23 @@ twyne tx batch simulate <batch-file.yaml> [--evc-address <addr>]
 ```
 
 Batch files are YAML or JSON with an `operations` list. Supported actions: `collateral.deposit`, `collateral.withdraw`, `collateral.borrow`, `collateral.repay`, `token.approve`.
+
+### Gas configuration
+
+All transactions use a **1.5x gas limit multiplier** by default (configured in `ape-config.yaml`). This ensures complex EVC batch transactions have enough gas headroom.
+
+Two optional flags are available on all `twyne tx` commands:
+
+- `--gas-multiplier <float>` — Override the gas limit multiplier (e.g. `--gas-multiplier 2.0` for 2x estimated gas). Overrides the default 1.5x from config.
+- `--priority-fee <gwei>` — Set the max priority fee tip in gwei (e.g. `--priority-fee 2.5` for 2.5 gwei). Useful when transactions are stuck in the mempool due to low tips.
+
+```bash
+# Use 2x gas limit and 3 gwei priority fee
+twyne tx collateral deposit <vault> 1.0 --gas-multiplier 2.0 --priority-fee 3
+
+# Higher tip for time-sensitive batch
+twyne tx factory open-position <iv> <tv> --deposit 1.5 --priority-fee 5
+```
 
 ## Development
 

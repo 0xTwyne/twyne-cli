@@ -7,6 +7,7 @@ Runs against Anvil fork at mainnet block 24520000.
 
 import pytest
 import yaml
+from click.testing import CliRunner
 
 from twyne_cli.batch import build_batch_items, parse_batch_file, validate_batch
 from twyne_cli.contracts import (
@@ -18,13 +19,15 @@ from twyne_cli.contracts import (
 from twyne_cli.contracts import (
     evc as evc_contract,
 )
-from twyne_cli.transactions import execute_through_evc, simulate_tx
+from twyne_cli.transactions import execute_through_evc, simulate_through_evc, simulate_tx
 
 from .conftest import (
+    AAVE_AWSTETH_IV,
     AAVE_DELEVERAGE_OP,
     AAVE_LEVERAGE_OP,
     AAVE_TELEPORT_OP,
-    BEACON_EULER_EWETH,
+    AAVE_V3_POOL,
+    ANVIL_RPC,
     CV_FACTORY,
     DEFAULT_LIQ_LTV,
     EULER_DELEVERAGE_OP,
@@ -32,7 +35,9 @@ from .conftest import (
     EULER_EWETH_IV,
     EULER_LEVERAGE_OP,
     EULER_TARGET_VAULT,
+    MAX_AAVE_LTV,
     TWYNE_EVC,
+    WETH,
     ZERO_ADDRESS,
     _create_vault_via_evc,
 )
@@ -45,9 +50,9 @@ from .conftest import (
 class TestFactoryCreateVault:
     """Tests for CollateralVaultFactory.createCollateralVault().
 
-    The factory ABI uses v2 (5 args: vaultType, asset, targetVault, liqLTV,
-    targetAsset). The callThroughEVC modifier requires real transactions to
-    go through EVC.batch(), but eth_call (simulation) bypasses this.
+    The factory ABI uses 5 args: vaultType, intermediateVault, targetVault,
+    liqLTV, targetAsset. The callThroughEVC modifier requires real transactions
+    to go through EVC.batch(), but eth_call (simulation) bypasses this.
     """
 
     def test_create_vault_via_evc_succeeds(self, test_account, ape_provider):
@@ -83,6 +88,67 @@ class TestFactoryCreateVault:
         )
         assert sim["success"] is True
         assert sim["result"]  # Returns predicted vault address
+
+
+# --------------------------------------------------------------------------- #
+# Factory: simulate_through_evc (EVC-routed simulation)
+# --------------------------------------------------------------------------- #
+
+
+class TestSimulateThroughEVC:
+    """Tests for simulate_through_evc() — the EVC-routed eth_call simulation.
+
+    The factory's callThroughEVC modifier requires EVC authentication context.
+    Direct eth_call (simulate_tx) may bypass this for simple Euler cases, but
+    Aave vault creation with initialization logic requires proper EVC routing.
+    simulate_through_evc routes through evc.call() for correct auth context.
+    """
+
+    def test_euler_vault_creation_succeeds(self, test_account, ape_provider):
+        """Euler vault creation simulation via EVC routing succeeds."""
+        factory = collateral_vault_factory()
+        args = [0, EULER_EWETH_IV, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, ZERO_ADDRESS]
+        sim = simulate_through_evc(factory, "createCollateralVault", args, sender=test_account)
+        assert sim["success"] is True
+        assert sim["result"]  # Returns encoded result (predicted vault address)
+
+    def test_aave_vault_creation_succeeds(self, test_account, ape_provider):
+        """Aave vault creation simulation via EVC routing succeeds.
+
+        Aave requires: vault_type=1, target_asset=WETH, and VaultManager must
+        have allowedTargetAssets configured (done in vault_manager_configured).
+        """
+        factory = collateral_vault_factory()
+        args = [1, AAVE_AWSTETH_IV, AAVE_V3_POOL, MAX_AAVE_LTV, WETH]
+        sim = simulate_through_evc(factory, "createCollateralVault", args, sender=test_account)
+        assert sim["success"] is True
+        assert sim["result"]  # Returns encoded result (predicted vault address)
+
+    def test_wrong_intermediate_vault_fails_gracefully(self, test_account, ape_provider):
+        """Passing a non-IV address (collateral token) returns failure, not crash."""
+        factory = collateral_vault_factory()
+        # EULER_EWETH is a collateral token, NOT an intermediate vault
+        args = [0, EULER_EWETH, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, ZERO_ADDRESS]
+        sim = simulate_through_evc(factory, "createCollateralVault", args, sender=test_account)
+        assert sim["success"] is False
+        assert sim["error"]  # Has a meaningful error message
+
+    def test_aave_missing_target_asset_fails(self, test_account, ape_provider):
+        """Aave vault creation with zero target asset fails via EVC simulation."""
+        factory = collateral_vault_factory()
+        args = [1, AAVE_AWSTETH_IV, AAVE_V3_POOL, MAX_AAVE_LTV, ZERO_ADDRESS]
+        sim = simulate_through_evc(factory, "createCollateralVault", args, sender=test_account)
+        assert sim["success"] is False
+        assert sim["error"]
+
+    def test_aave_wrong_target_asset_fails(self, test_account, ape_provider):
+        """Aave vault creation with non-whitelisted target asset fails."""
+        factory = collateral_vault_factory()
+        # Use EULER_EWETH as target asset — not a whitelisted target for Aave
+        args = [1, AAVE_AWSTETH_IV, AAVE_V3_POOL, MAX_AAVE_LTV, EULER_EWETH]
+        sim = simulate_through_evc(factory, "createCollateralVault", args, sender=test_account)
+        assert sim["success"] is False
+        assert sim["error"]
 
 
 # --------------------------------------------------------------------------- #
@@ -165,7 +231,7 @@ class TestBatchBuildAndSimulate:
     """Tests for building batch items and simulating via EVC.
 
     These tests hit the chain to resolve token decimals and encode calldata.
-    Uses _create_vault_via_evc() to create real vaults (bypasses CLI's stale factory ABI).
+    Uses _create_vault_via_evc() to create real vaults (raw-RPC helper for fast setup).
 
     BUG DOCUMENTED: batch.py's encode_operation() uses cv.deposit.as_transaction()
     to encode calldata. Ape's .as_transaction() triggers gas estimation, which
@@ -272,7 +338,7 @@ class TestOperatorContracts:
 class TestOperatorSimulations:
     """Tests that operator simulations revert with operator logic, not missing contracts.
 
-    Uses _create_vault_via_evc() for vault creation (bypasses CLI's stale factory ABI).
+    Uses _create_vault_via_evc() for vault creation (raw-RPC helper for fast setup).
 
     Operator ABI signatures:
       executeLeverage(address, uint256, uint256, uint256, uint256, uint256, bytes[])
@@ -353,3 +419,124 @@ class TestOperatorSimulations:
 
         # teleport is an event (T_Teleport), not a callable function
         assert not hasattr(cv, "teleport") or not callable(getattr(cv, "teleport", None))
+
+
+# --------------------------------------------------------------------------- #
+# Factory: create-vault CLI command (CliRunner against Anvil)
+# --------------------------------------------------------------------------- #
+
+
+class TestCreateVaultCLICommand:
+    """End-to-end tests for `twyne tx factory create-vault` via CliRunner.
+
+    These tests run the actual CLI command against the Anvil fork, validating
+    that the fixed arg order (intermediate_vault, target_vault) works correctly.
+    """
+
+    @staticmethod
+    def _pk_for(test_account) -> str:
+        """Extract raw hex private key from an Ape test account."""
+        # Anvil deterministic account #0 private key
+        return "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+
+    def test_create_vault_cli_dry_run(self, test_account, ape_provider):
+        """Full CLI dry-run against Anvil shows predicted vault address."""
+        from twyne_cli.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "--rpc", ANVIL_RPC,
+            "tx", "factory", "create-vault",
+            EULER_EWETH_IV, EULER_TARGET_VAULT,
+            "--ltv", str(DEFAULT_LIQ_LTV),
+            "--dry-run",
+            "--private-key", self._pk_for(test_account),
+        ])
+        assert result.exit_code == 0, f"CLI failed: {result.output}\n{result.exception}"
+        assert "Dry run" in result.output
+        assert "Predicted vault address" in result.output
+
+    def test_create_vault_cli_execution(self, test_account, ape_provider):
+        """Full CLI execution creates vault and prints new vault address."""
+        from twyne_cli.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "--rpc", ANVIL_RPC,
+            "tx", "factory", "create-vault",
+            EULER_EWETH_IV, EULER_TARGET_VAULT,
+            "--ltv", str(DEFAULT_LIQ_LTV),
+            "--yes",
+            "--private-key", self._pk_for(test_account),
+        ])
+        assert result.exit_code == 0, f"CLI failed: {result.output}\n{result.exception}"
+        assert "New vault address:" in result.output or "Status" in result.output
+
+    def test_create_vault_cli_wrong_intermediate_vault_fails(self, test_account, ape_provider):
+        """Passing a collateral token address (not an IV) causes simulation failure."""
+        from twyne_cli.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "--rpc", ANVIL_RPC,
+            "tx", "factory", "create-vault",
+            EULER_EWETH, EULER_TARGET_VAULT,  # EULER_EWETH is NOT an IV
+            "--ltv", str(DEFAULT_LIQ_LTV),
+            "--dry-run",
+            "--private-key", self._pk_for(test_account),
+        ])
+        assert result.exit_code != 0
+        assert "Simulation failed" in result.output or "error" in result.output.lower()
+
+    def test_create_vault_cli_aave_dry_run(self, test_account, ape_provider):
+        """Full CLI dry-run for Aave vault creation against Anvil."""
+        from twyne_cli.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "--rpc", ANVIL_RPC,
+            "tx", "factory", "create-vault",
+            AAVE_AWSTETH_IV, AAVE_V3_POOL,
+            "--vault-type", "1",
+            "--ltv", str(MAX_AAVE_LTV),
+            "--target-asset", WETH,
+            "--dry-run",
+            "--private-key", self._pk_for(test_account),
+        ])
+        assert result.exit_code == 0, f"CLI failed: {result.output}\n{result.exception}"
+        assert "Dry run" in result.output
+        assert "Predicted vault address" in result.output
+
+    def test_create_vault_cli_aave_execution(self, test_account, ape_provider):
+        """Full CLI execution for Aave vault creation against Anvil."""
+        from twyne_cli.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "--rpc", ANVIL_RPC,
+            "tx", "factory", "create-vault",
+            AAVE_AWSTETH_IV, AAVE_V3_POOL,
+            "--vault-type", "1",
+            "--ltv", str(MAX_AAVE_LTV),
+            "--target-asset", WETH,
+            "--yes",
+            "--private-key", self._pk_for(test_account),
+        ])
+        assert result.exit_code == 0, f"CLI failed: {result.output}\n{result.exception}"
+        assert "New vault address:" in result.output or "Status" in result.output
+
+    def test_create_vault_cli_aave_missing_target_asset(self, test_account, ape_provider):
+        """Aave vault type without --target-asset fails before simulation."""
+        from twyne_cli.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "--rpc", ANVIL_RPC,
+            "tx", "factory", "create-vault",
+            EULER_EWETH_IV, EULER_TARGET_VAULT,
+            "--vault-type", "1",
+            "--ltv", str(DEFAULT_LIQ_LTV),
+            "--private-key", self._pk_for(test_account),
+        ])
+        assert result.exit_code != 0
+        assert "target-asset" in result.output.lower() or "target-asset" in str(result.exception or "").lower()

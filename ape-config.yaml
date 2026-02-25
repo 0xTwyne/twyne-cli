@@ -3,3 +3,7 @@ name: twyne-cli
 ethereum:
   mainnet:
     default_provider: node
+    gas_limit:
+      auto:
+        multiplier: 1.5
+    base_fee_multiplier: 1.4

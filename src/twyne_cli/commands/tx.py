@@ -17,6 +17,7 @@ from ..contracts import (
     get_address,
     leverage_operator,
     resolve_aave_factory_vault,
+    resolve_euler_factory_vault,
     teleport_operator,
 )
 from ..contracts import (
@@ -83,7 +84,88 @@ def tx_options(f):
                      help="Use max uint256 approval instead of exact amount")(f)
     f = click.option("--skip-approval", is_flag=True, default=False,
                      help="Don't auto-approve; error if allowance insufficient")(f)
+    f = click.option("--gas-multiplier", "gas_multiplier", type=float, default=None,
+                     help="Gas limit multiplier (overrides default 1.5x from config)")(f)
+    f = click.option("--priority-fee", "priority_fee", default=None,
+                     help="Max priority fee in gwei (e.g. '2.5' for 2.5 gwei)")(f)
     return f
+
+
+def _build_gas_kwargs(gas_multiplier: float | None = None, priority_fee: str | None = None, **extras) -> dict:
+    """Build gas-related kwargs for Ape contract calls.
+
+    Can be called with explicit params or by unpacking **_ from a command:
+        gas_kwargs = _build_gas_kwargs(**_)           # from catch-all kwargs
+        gas_kwargs = _build_gas_kwargs(gas_multiplier=2.0, priority_fee="3")
+
+    gas_multiplier: Override for gas limit multiplier. When set, manually estimates
+        gas and applies the multiplier (bypassing ape-config.yaml's auto setting).
+        The default 1.5x multiplier is set in ape-config.yaml; this flag overrides it.
+    priority_fee: Max priority fee in gwei (e.g. "2.5" → 2_500_000_000 wei).
+    """
+    kwargs: dict = {}
+    if priority_fee is not None:
+        kwargs["max_priority_fee"] = int(float(priority_fee) * 1e9)
+    if gas_multiplier is not None:
+        kwargs["_gas_multiplier"] = gas_multiplier
+    return kwargs
+
+
+def _send_tx(contract_fn, args: list, sender, gas_kwargs: dict):
+    """Send a transaction with optional gas multiplier override.
+
+    If _gas_multiplier is in gas_kwargs, manually estimates gas and applies
+    the multiplier before sending. Otherwise, relies on ape-config.yaml defaults
+    (1.5x gas multiplier).
+
+    Catches ContractLogicError and decodes common Twyne error selectors for
+    user-friendly diagnostics before re-raising.
+    """
+    from ape.exceptions import ContractLogicError
+
+    extra = {k: v for k, v in gas_kwargs.items() if k != "_gas_multiplier"}
+    multiplier = gas_kwargs.get("_gas_multiplier")
+    if multiplier is not None:
+        try:
+            estimate = contract_fn.estimate_gas_cost(*args, sender=sender, **extra)
+            extra["gas"] = int(estimate * multiplier)
+        except Exception:
+            pass  # Fall back to ape-config.yaml defaults
+    try:
+        return contract_fn(*args, sender=sender, **extra)
+    except ContractLogicError as e:
+        _diagnose_revert(e)
+        raise
+    except Exception as e:
+        # Ape trace enrichment can crash before raising ContractLogicError
+        err_str = str(e)
+        if "0x9773bb71" in err_str or "E_TransferFromFailed" in err_str:
+            click.echo("\nTransaction reverted: token transferFrom failed.", err=True)
+            click.echo("The vault tried to pull tokens from your wallet but the transfer was rejected.", err=True)
+            click.echo("Common causes:", err=True)
+            click.echo("  1. Insufficient token balance (do you have the token, not just ETH?)", err=True)
+            click.echo("  2. Token approval pointing to wrong address", err=True)
+            click.echo("  3. Predicted vault address mismatch", err=True)
+        raise
+
+
+def _diagnose_revert(e):
+    """Print user-friendly diagnostics for known Twyne contract revert errors."""
+    err_str = str(e)
+    revert_msg = getattr(e, "revert_message", None) or ""
+    # E_TransferFromFailed — vault couldn't pull tokens from user
+    if "E_TransferFromFailed" in err_str or "0x9773bb71" in err_str:
+        click.echo("\nTransaction reverted: token transferFrom failed.", err=True)
+        click.echo("The vault tried to pull tokens from your wallet but the transfer was rejected.", err=True)
+        click.echo("Common causes:", err=True)
+        click.echo("  1. Insufficient token balance (do you have the token, not just ETH?)", err=True)
+        click.echo("     - For WETH positions: wrap ETH first via the WETH contract deposit()", err=True)
+        click.echo("  2. Token approval pointing to wrong address", err=True)
+        click.echo("  3. Predicted vault address doesn't match actual created vault", err=True)
+    elif "EVC_EmptyError" in err_str or "0x" in revert_msg:
+        click.echo(f"\nTransaction reverted: {revert_msg or err_str}", err=True)
+    else:
+        click.echo(f"\nTransaction reverted: {e}", err=True)
 
 
 def _get_token_decimals(contract_instance, block=None) -> int:
@@ -996,6 +1078,21 @@ def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key)
+
+        # For Euler vaults, the factory expects the collateral asset (eVault share token),
+        # not the Twyne CreditEVault IV address. The VaultManager stores maxTwyneLTVs
+        # and externalLiqBuffers keyed by the collateral asset address.
+        if vault_type == 0:
+            resolved = resolve_euler_factory_vault(intermediate_vault)
+            if resolved:
+                click.echo(
+                    f"Note: Euler factory expects the collateral asset (eVault share token).\n"
+                    f"  Resolving {intermediate_vault[:10]}...{intermediate_vault[-4:]}"
+                    f" → {resolved[:10]}...{resolved[-4:]}",
+                    err=True,
+                )
+                intermediate_vault = resolved
+
         fct = collateral_vault_factory()
         target_asset = target_asset or ZERO_ADDRESS
 
@@ -1028,7 +1125,8 @@ def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type
             click.echo("Cancelled.")
             return
 
-        receipt = execute_through_evc(fct, "createCollateralVault", args, account)
+        gas_kwargs = _build_gas_kwargs(**_)
+        receipt = execute_through_evc(fct, "createCollateralVault", args, account, **gas_kwargs)
         vault_address = _extract_vault_address_from_receipt(receipt, str(fct.address))
         if vault_address:
             click.echo(f"New vault address: {vault_address}")
@@ -1050,6 +1148,235 @@ def _extract_vault_address_from_receipt(receipt, factory_address: str) -> str | 
             if len(topics) >= 2 and topics[0].hex() == _VAULT_CREATED_TOPIC_HEX:
                 return "0x" + topics[1].hex()[-40:]
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Open-position command (create vault + deposit + optional borrow in one batch)
+# --------------------------------------------------------------------------- #
+
+
+def _derive_deposit_underlying(intermediate_vault: str, vault_type: int) -> str:
+    """Derive the underlying deposit token from the intermediate vault.
+
+    Euler: IV.asset() = eVault share token → eVault.asset() = raw underlying (e.g. wstETH).
+    Aave: IV.asset() = underlying token directly.
+    """
+    iv = credit_vault(intermediate_vault)
+    if vault_type == 0:  # Euler
+        evault_addr = iv.asset()
+        return str(credit_vault(str(evault_addr)).asset())
+    else:  # Aave
+        return str(iv.asset())
+
+
+def _derive_borrow_token(target_vault: str, target_asset: str | None, vault_type: int) -> str:
+    """Derive the borrow/debt token address.
+
+    Euler: target vault is an eVault, its asset() = borrow token.
+    Aave: user provides --target-asset explicitly.
+    """
+    if vault_type == 1 and target_asset:  # Aave
+        return target_asset
+    # Euler — target vault asset
+    return str(credit_vault(target_vault).asset())
+
+
+def _build_open_position_batch(
+    factory, create_args: list, predicted_address: str,
+    raw_deposit: int, raw_borrow: int | None, sender: str,
+) -> list[tuple]:
+    """Build EVC batch items for create-vault + deposit + (optional) borrow."""
+    items = []
+
+    # Item 1: create vault
+    create_data = factory.createCollateralVault.encode_input(*create_args)
+    items.append((str(factory.address), sender, 0, create_data))
+
+    # Item 2: deposit underlying
+    cv = collateral_vault(predicted_address)
+    deposit_data = cv.depositUnderlying.encode_input(raw_deposit)
+    items.append((predicted_address, sender, 0, deposit_data))
+
+    # Item 3 (optional): borrow
+    if raw_borrow is not None:
+        borrow_data = cv.borrow.encode_input(raw_borrow, sender)
+        items.append((predicted_address, sender, 0, borrow_data))
+
+    return items
+
+
+@factory.command(name="open-position")
+@click.argument("intermediate_vault")
+@click.argument("target_vault")
+@click.option("--vault-type", type=int, default=0, help="Vault type: 0=Euler, 1=Aave (default: 0)")
+@click.option("--ltv", type=int, default=8500, help="Liquidation LTV in basis points (default: 8500 = 85%)")
+@click.option("--target-asset", default=None, help="Debt token address (required for Aave, ignored for Euler)")
+@click.option("--deposit", "deposit_amount", required=True, help="Amount of underlying token to deposit")
+@click.option("--borrow", "borrow_amount", default=None, help="Amount to borrow (omit for deposit-only)")
+@tx_options
+@pass_ctx
+def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_type, ltv,
+                  target_asset, deposit_amount, borrow_amount,
+                  account_alias, private_key, dry_run, skip_confirm, **_):
+    """Create a vault, deposit collateral, and optionally borrow — in one atomic EVC batch.
+
+    INTERMEDIATE_VAULT: The Twyne Intermediate Vault (CreditEVault) address.
+
+    TARGET_VAULT: External lending vault (Euler eVault or Aave pool).
+
+    Uses depositUnderlying() so --deposit is in raw token units (e.g. wstETH, WETH),
+    not receipt token units (ewstETH, awstETH).
+    """
+    from ..constants import ZERO_ADDRESS
+
+    if vault_type == 1 and not target_asset:
+        raise click.UsageError("Aave vaults (--vault-type 1) require --target-asset <debt-token-address>.")
+
+    # Auto-resolve Aave IV → aToken wrapper
+    if vault_type == 1:
+        resolved = resolve_aave_factory_vault(intermediate_vault)
+        if resolved:
+            click.echo(
+                f"Note: Aave vaults require the aToken wrapper address for the factory.\n"
+                f"  Resolving {intermediate_vault[:10]}...{intermediate_vault[-4:]}"
+                f" → {resolved[:10]}...{resolved[-4:]}",
+                err=True,
+            )
+            intermediate_vault = resolved
+
+    # Save original IV for token derivation (Euler double-hop needs the CreditEVault)
+    original_iv = intermediate_vault
+
+    ctx.connect()
+    try:
+        account = resolve_account(account_alias, private_key)
+
+        # For Euler vaults, the factory expects the collateral asset (eVault share token),
+        # not the Twyne CreditEVault IV address. The VaultManager stores maxTwyneLTVs
+        # and externalLiqBuffers keyed by the collateral asset address.
+        if vault_type == 0:
+            resolved = resolve_euler_factory_vault(intermediate_vault)
+            if resolved:
+                click.echo(
+                    f"Note: Euler factory expects the collateral asset (eVault share token).\n"
+                    f"  Resolving {intermediate_vault[:10]}...{intermediate_vault[-4:]}"
+                    f" → {resolved[:10]}...{resolved[-4:]}",
+                    err=True,
+                )
+                intermediate_vault = resolved
+
+        fct = collateral_vault_factory()
+        target_asset_addr = target_asset or ZERO_ADDRESS
+
+        # 1. Predict vault address via simulation
+        create_args = [vault_type, intermediate_vault, target_vault, ltv, target_asset_addr]
+        sim = simulate_through_evc(fct, "createCollateralVault", create_args, sender=account)
+        if not sim["success"]:
+            click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
+            raise SystemExit(1)
+        predicted_address = _format_sim_address(sim["result"])
+
+        # 2. Derive deposit token (underlying) and borrow token
+        # Use original IV for Euler token derivation (needs CreditEVault for double-hop)
+        deposit_token_addr = _derive_deposit_underlying(original_iv, vault_type)
+        deposit_token = erc20(deposit_token_addr)
+        deposit_decimals = deposit_token.decimals()
+        deposit_symbol = deposit_token.symbol()
+
+        borrow_token_addr = None
+        borrow_symbol = None
+        borrow_decimals = None
+        if borrow_amount:
+            borrow_token_addr = _derive_borrow_token(target_vault, target_asset, vault_type)
+            borrow_token = erc20(borrow_token_addr)
+            borrow_decimals = borrow_token.decimals()
+            borrow_symbol = borrow_token.symbol()
+
+        # 3. Parse amounts and check balance
+        raw_deposit = parse_amount(deposit_amount, deposit_decimals)
+        raw_borrow = parse_amount(borrow_amount, borrow_decimals) if borrow_amount else None
+
+        # Check user has enough deposit token
+        user_balance = deposit_token.balanceOf(str(account.address))
+        if user_balance < raw_deposit:
+            human_balance = user_balance / 10**deposit_decimals
+            click.echo(f"Error: Insufficient {deposit_symbol} balance.", err=True)
+            click.echo(f"  Required: {deposit_amount} {deposit_symbol}", err=True)
+            click.echo(f"  Balance:  {human_balance} {deposit_symbol}", err=True)
+            # Check if this is WETH and user might need to wrap ETH
+            if deposit_symbol == "WETH":
+                click.echo("\nHint: You may need to wrap ETH → WETH first:", err=True)
+                click.echo(f"  cast send 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 "
+                           f"--value {deposit_amount}ether 'deposit()' --private-key $PRIVATE_KEY", err=True)
+            raise SystemExit(1)
+
+        # 4. Display summary
+        click.echo(f"\nPredicted vault: {predicted_address}")
+        click.echo(f"Deposit token:   {deposit_symbol} ({deposit_token_addr})")
+        if borrow_amount:
+            click.echo(f"Borrow token:    {borrow_symbol} ({borrow_token_addr})")
+
+        vault_type_name = "Euler" if vault_type == 0 else "Aave"
+        details = [
+            ("Factory", str(fct.address)),
+            ("Vault Type", vault_type_name),
+            ("Intermediate Vault", intermediate_vault),
+            ("Target Vault", target_vault),
+            ("Liq LTV", f"{ltv} bp ({ltv/100:.1f}%)"),
+            ("Deposit", f"{deposit_amount} {deposit_symbol} (underlying)"),
+        ]
+        if borrow_amount:
+            details.append(("Borrow", f"{borrow_amount} {borrow_symbol}"))
+        details.append(("Sender", str(account.address)))
+
+        if dry_run:
+            click.echo("Dry run — vault creation simulation passed.")
+            return
+
+        # 5. Build gas kwargs from CLI flags
+        gas_kwargs = _build_gas_kwargs(**_)
+
+        # 6. Handle token approval (must happen before batch simulation,
+        #    since depositUnderlying does transferFrom which needs allowance)
+        if not ensure_allowance(deposit_token_addr, predicted_address, raw_deposit, account,
+                                skip_confirm=skip_confirm, **gas_kwargs):
+            click.echo("Approval declined.")
+            return
+
+        # 7. Build and simulate full batch (approval now in place)
+        batch_items = _build_open_position_batch(
+            fct, create_args, predicted_address,
+            raw_deposit, raw_borrow, str(account.address),
+        )
+        evc_instance = evc_contract()
+        sim_batch = simulate_tx(evc_instance, "batch", [batch_items], sender=account)
+        if not sim_batch["success"]:
+            err_msg = sim_batch.get("error", "")
+            click.echo(f"\nBatch simulation failed: {err_msg}", err=True)
+            # Detect token transfer failures specifically
+            if "E_TransferFromFailed" in err_msg or "0x9773bb71" in err_msg:
+                click.echo("The vault's depositUnderlying could not pull tokens from your wallet.", err=True)
+                click.echo("Verify you have sufficient token balance (not just ETH).", err=True)
+                raise SystemExit(1)
+            click.echo("Note: vault creation simulation passed. The batch revert may be "
+                       "due to Ape trace bugs or transient state.", err=True)
+            _show_verbose_error(ctx, sim_batch)
+            if not click.confirm("Proceed with on-chain submission anyway?", default=False):
+                raise SystemExit(1)
+
+        # 8. Confirm and execute
+        if not confirm_prompt(f"Open {vault_type_name} position", details, skip_confirm):
+            click.echo("Cancelled.")
+            return
+
+        receipt = _send_tx(evc_instance.batch, [batch_items], account, gas_kwargs)
+        vault_address = _extract_vault_address_from_receipt(receipt, str(fct.address))
+        if vault_address:
+            click.echo(f"New vault address: {vault_address}")
+        display_receipt(receipt)
+    finally:
+        ctx.disconnect()
 
 
 # --------------------------------------------------------------------------- #
@@ -1077,13 +1404,14 @@ def execute(ctx: TwyneContext, batch_file, evc_address, account_alias, private_k
     try:
         account = resolve_account(account_alias, private_key)
         batch_data = parse_batch_file(batch_file)
+        gas_kwargs = _build_gas_kwargs(**_)
 
         # Auto-approve tokens needed by batch operations
         requirements = collect_approval_requirements(batch_data, str(account.address))
         for req in requirements:
             if not ensure_allowance(req["token"], req["spender"], req["amount"], account,
                                     skip_confirm=skip_confirm, skip_approval=skip_approval,
-                                    max_approve=max_approve):
+                                    max_approve=max_approve, **gas_kwargs):
                 click.echo("Approval declined.")
                 return
 
@@ -1122,7 +1450,7 @@ def execute(ctx: TwyneContext, batch_file, evc_address, account_alias, private_k
             click.echo("Cancelled.")
             return
 
-        receipt = evc_instance.batch(batch_items, sender=account)
+        receipt = _send_tx(evc_instance.batch, [batch_items], account, gas_kwargs)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
