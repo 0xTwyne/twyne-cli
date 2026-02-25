@@ -24,6 +24,13 @@ from ..contracts import (
 from ..contracts import (
     evc as evc_contract,
 )
+from ..discover import (
+    AAVE_V3,
+    EULER_V2,
+    discover_aave_positions,
+    discover_all_positions,
+    discover_euler_positions,
+)
 from ..formatting import format_address
 from ..swap import extract_multicall_data, get_swap_quote
 from ..transactions import (
@@ -90,10 +97,12 @@ def tx_options(f):
                      help="Gas limit multiplier (overrides default 1.5x from config)")(f)
     f = click.option("--priority-fee", "priority_fee", default=None,
                      help="Max priority fee in gwei (e.g. '2.5' for 2.5 gwei)")(f)
+    f = click.option("--gas-limit", "gas_limit", type=int, default=None,
+                     help="Fixed gas limit (bypasses gas estimation entirely)")(f)
     return f
 
 
-def _build_gas_kwargs(gas_multiplier: float | None = None, priority_fee: str | None = None, **extras) -> dict:
+def _build_gas_kwargs(gas_multiplier: float | None = None, priority_fee: str | None = None, gas_limit: int | None = None, **extras) -> dict:
     """Build gas-related kwargs for Ape contract calls.
 
     Can be called with explicit params or by unpacking **_ from a command:
@@ -104,11 +113,14 @@ def _build_gas_kwargs(gas_multiplier: float | None = None, priority_fee: str | N
         gas and applies the multiplier (bypassing ape-config.yaml's auto setting).
         The default 1.5x multiplier is set in ape-config.yaml; this flag overrides it.
     priority_fee: Max priority fee in gwei (e.g. "2.5" → 2_500_000_000 wei).
+    gas_limit: Fixed gas limit in gas units. Bypasses gas estimation entirely.
     """
     kwargs: dict = {}
     if priority_fee is not None:
         kwargs["max_priority_fee"] = int(float(priority_fee) * 1e9)
-    if gas_multiplier is not None:
+    if gas_limit is not None:
+        kwargs["gas"] = gas_limit
+    elif gas_multiplier is not None:
         kwargs["_gas_multiplier"] = gas_multiplier
     return kwargs
 
@@ -120,6 +132,9 @@ def _send_tx(contract_fn, args: list, sender, gas_kwargs: dict):
     the multiplier before sending. Otherwise, relies on ape-config.yaml defaults
     (1.5x gas multiplier).
 
+    When gas estimation fails (common with complex EVC batches), falls back to
+    a fixed gas limit so Ape doesn't re-attempt estimation during send.
+
     Catches ContractLogicError and decodes common Twyne error selectors for
     user-friendly diagnostics before re-raising.
     """
@@ -127,12 +142,17 @@ def _send_tx(contract_fn, args: list, sender, gas_kwargs: dict):
 
     extra = {k: v for k, v in gas_kwargs.items() if k != "_gas_multiplier"}
     multiplier = gas_kwargs.get("_gas_multiplier")
-    if multiplier is not None:
+    if "gas" in extra:
+        click.echo(f"  Using fixed gas limit: {extra['gas']:,}", err=True)
+    elif multiplier is not None:
         try:
             estimate = contract_fn.estimate_gas_cost(*args, sender=sender, **extra)
             extra["gas"] = int(estimate * multiplier)
         except Exception:
-            pass  # Fall back to ape-config.yaml defaults
+            # Gas estimation failed (e.g. EVC_EmptyError on complex batches).
+            # Set a fallback so Ape doesn't re-attempt estimation during send.
+            extra["gas"] = 5_000_000
+            click.echo("  Gas estimation failed; using fallback 5,000,000 gas limit.", err=True)
     try:
         return contract_fn(*args, sender=sender, **extra)
     except ContractLogicError as e:
@@ -1722,3 +1742,338 @@ def simulate(ctx: TwyneContext, batch_file, evc_address, account_alias, private_
             raise SystemExit(1)
     finally:
         ctx.disconnect()
+
+
+# --------------------------------------------------------------------------- #
+# Position migration commands (discover + migrate)
+# --------------------------------------------------------------------------- #
+
+
+@tx.command(name="discover-positions")
+@click.argument("wallet_address")
+@click.option("--protocol", type=click.Choice(["euler", "aave"]), default=None,
+              help="Only discover from a specific protocol (default: both)")
+@pass_ctx
+def discover_positions(ctx: TwyneContext, wallet_address, protocol):
+    """Discover migratable positions from Euler V2 and Aave V3.
+
+    WALLET_ADDRESS: The wallet to scan for migratable lending positions.
+    """
+    from ..formatting import output_table
+
+    ctx.connect()
+    try:
+        if protocol == "euler":
+            positions = discover_euler_positions(wallet_address)
+        elif protocol == "aave":
+            positions = discover_aave_positions(wallet_address)
+        else:
+            positions = discover_all_positions(wallet_address)
+
+        if not positions:
+            click.echo(f"No migratable positions found for {format_address(wallet_address)}.")
+            return
+
+        click.echo(f"\nMigratable Positions for {format_address(wallet_address)}")
+
+        headers = ["#", "Protocol", "Collateral", "Debt", "Current LTV", "Liq LTV", "Max Twyne LTV"]
+        rows = []
+        for i, pos in enumerate(positions, 1):
+            collateral_human = pos.collateral_amount / 10**pos.collateral_decimals
+            debt_human = pos.debt_amount / 10**pos.debt_decimals
+            liq_ltv_str = f"{pos.liq_ltv_bps / 100:.1f}%" if pos.liq_ltv_bps else "N/A"
+            max_twyne_str = f"{pos.max_twyne_ltv_bps / 100:.1f}%" if pos.max_twyne_ltv_bps else "N/A"
+            rows.append([
+                str(i),
+                pos.protocol.capitalize(),
+                f"{collateral_human:.4f} {pos.collateral_symbol}",
+                f"{debt_human:.4f} {pos.debt_symbol}",
+                f"{pos.ltv_bps / 100:.1f}%",
+                liq_ltv_str,
+                max_twyne_str,
+            ])
+
+        output_table(headers, rows)
+    finally:
+        ctx.disconnect()
+
+
+@tx.command(name="migrate-position")
+@click.argument("wallet_address")
+@click.option("--protocol", type=click.Choice(["euler", "aave"]), default=None,
+              help="Override protocol detection")
+@click.option("--ltv", type=int, default=8500,
+              help="Liquidation LTV in basis points (default: 8500 = 85%)")
+@click.option("--position", "position_num", type=int, default=None,
+              help="Position number from discover-positions (skip interactive selection)")
+@tx_options
+@pass_ctx
+def migrate_position(ctx: TwyneContext, wallet_address, protocol, ltv, position_num,
+                     account_alias, private_key, dry_run, skip_confirm, **_):
+    """Migrate an existing Euler/Aave position to Twyne in one transaction.
+
+    WALLET_ADDRESS: The wallet holding the lending position to migrate.
+
+    First discovers migratable positions, then builds and executes the
+    migration transaction (create vault + teleport).
+    """
+
+    ctx.connect()
+    try:
+        account = resolve_account(account_alias, private_key)
+
+        # 1. Discover positions
+        if protocol == "euler":
+            positions = discover_euler_positions(wallet_address)
+        elif protocol == "aave":
+            positions = discover_aave_positions(wallet_address)
+        else:
+            positions = discover_all_positions(wallet_address)
+
+        if not positions:
+            click.echo("No migratable positions found.")
+            return
+
+        # 2. Select position
+        if position_num is not None:
+            if position_num < 1 or position_num > len(positions):
+                raise click.UsageError(f"Invalid position number {position_num}. Valid: 1-{len(positions)}")
+            selected = positions[position_num - 1]
+        elif len(positions) == 1:
+            selected = positions[0]
+            click.echo(f"Found 1 migratable position ({selected.protocol.capitalize()}).")
+        else:
+            # Show positions and prompt
+            for i, pos in enumerate(positions, 1):
+                c_human = pos.collateral_amount / 10**pos.collateral_decimals
+                d_human = pos.debt_amount / 10**pos.debt_decimals
+                click.echo(f"  {i}. [{pos.protocol.capitalize()}] "
+                           f"{c_human:.4f} {pos.collateral_symbol} / "
+                           f"{d_human:.4f} {pos.debt_symbol} "
+                           f"(LTV: {pos.ltv_bps / 100:.1f}%)")
+            choice = click.prompt("Select position", type=int)
+            if choice < 1 or choice > len(positions):
+                raise click.UsageError(f"Invalid choice {choice}.")
+            selected = positions[choice - 1]
+
+        click.echo(f"\nMigrating {selected.protocol.capitalize()} position:")
+        c_human = selected.collateral_amount / 10**selected.collateral_decimals
+        d_human = selected.debt_amount / 10**selected.debt_decimals
+        click.echo(f"  Collateral: {c_human:.4f} {selected.collateral_symbol}")
+        click.echo(f"  Debt:       {d_human:.4f} {selected.debt_symbol}")
+        click.echo(f"  Target LTV: {ltv / 100:.1f}%")
+
+        # 3. Route to protocol-specific migration
+        if selected.protocol == "euler":
+            _migrate_euler(ctx, selected, ltv, account, dry_run, skip_confirm, **_)
+        else:
+            _migrate_aave(ctx, selected, ltv, account, dry_run, skip_confirm, **_)
+    finally:
+        ctx.disconnect()
+
+
+def _migrate_euler(ctx, position, ltv, account, dry_run, skip_confirm, **gas_extra):
+    """Execute Euler position migration: createCV + teleport."""
+    fct = collateral_vault_factory()
+    sender = str(account.address)
+
+    # Resolve IV → eVault share token for factory
+    iv_addr = position.intermediate_vault
+    factory_vault = resolve_euler_factory_vault(iv_addr)
+    if factory_vault:
+        click.echo(f"  Resolved IV → eVault share: {format_address(factory_vault)}", err=True)
+    else:
+        factory_vault = iv_addr
+
+    # Derive target vault (the debt eVault is the target vault for Euler)
+    target_vault = position.debt_address
+    target_asset = "0x0000000000000000000000000000000000000000"
+
+    # 1. Simulate createCollateralVault to predict CV address
+    create_args = [EULER_V2, factory_vault, target_vault, ltv, target_asset]
+    sim = simulate_through_evc(fct, "createCollateralVault", create_args, sender=account)
+    if not sim["success"]:
+        click.echo(f"Create vault simulation failed: {sim['error']}", err=True)
+        _show_verbose_error(ctx, sim)
+        raise SystemExit(1)
+    predicted_cv = _format_sim_address(sim["result"])
+    click.echo(f"  Predicted vault: {predicted_cv}")
+
+    # 2. Approve eVault shares to the new CV
+    gas_kwargs = _build_gas_kwargs(**gas_extra)
+    if not dry_run:
+        if not ensure_allowance(
+            position.collateral_address, predicted_cv, position.collateral_amount, account,
+            skip_confirm=skip_confirm, **gas_kwargs,
+        ):
+            click.echo("Approval declined.")
+            return
+
+    # 3. Build EVC batch: [createCV, teleport]
+    cv = collateral_vault(predicted_cv)
+    # teleport(toDeposit, toBorrow, subAccountId)
+    # uint256.max for toBorrow = auto-repay all debt
+    uint256_max = 2**256 - 1
+    teleport_data = cv.teleport.encode_input(
+        position.collateral_amount, uint256_max, position.sub_account_id,
+    )
+    create_data = fct.createCollateralVault.encode_input(*create_args)
+
+    batch_items = [
+        (str(fct.address), sender, 0, create_data),
+        (predicted_cv, sender, 0, teleport_data),
+    ]
+
+    # 4. Simulate batch
+    evc_instance = evc_contract()
+    sim_batch = simulate_tx(evc_instance, "batch", [batch_items], sender=account)
+    if not sim_batch["success"]:
+        err_msg = sim_batch.get("error", "")
+        click.echo(f"\nBatch simulation failed: {err_msg}", err=True)
+        _show_verbose_error(ctx, sim_batch)
+        raise SystemExit(1)
+
+    details = [
+        ("Protocol", "Euler V2"),
+        ("Intermediate Vault", iv_addr),
+        ("Target Vault", target_vault),
+        ("Liq LTV", f"{ltv} bp ({ltv / 100:.1f}%)"),
+        ("Collateral", f"{position.collateral_amount} shares"),
+        ("Sub-account", str(position.sub_account_id)),
+        ("Predicted CV", predicted_cv),
+        ("Sender", sender),
+    ]
+
+    if dry_run:
+        click.echo("\nDry run — batch simulation passed.")
+        return
+
+    # 5. Confirm and execute
+    if not confirm_prompt("Migrate Euler position to Twyne", details, skip=skip_confirm):
+        click.echo("Cancelled.")
+        return
+
+    receipt = _send_tx(evc_instance.batch, [batch_items], account, gas_kwargs)
+    vault_address = _extract_vault_address_from_receipt(receipt, str(fct.address))
+    if vault_address:
+        click.echo(f"New Twyne vault: {vault_address}")
+    display_receipt(receipt)
+
+
+def _migrate_aave(ctx, position, ltv, account, dry_run, skip_confirm, **gas_extra):
+    """Execute Aave position migration: createCV + enable operator + teleport + disable operator."""
+    fct = collateral_vault_factory()
+    sender = str(account.address)
+
+    iv_addr = position.intermediate_vault
+    click.echo(f"  Intermediate vault: {format_address(iv_addr)}", err=True)
+
+    # On mainnet the factory's _intermediateVault param expects the aToken wrapper,
+    # which is registered in VaultManager (not the IV address itself).
+    wrapper_addr = resolve_aave_factory_vault(iv_addr)
+    if not wrapper_addr:
+        click.echo(f"Cannot resolve aToken wrapper for IV {iv_addr}", err=True)
+        raise SystemExit(1)
+    click.echo(f"  aToken wrapper: {format_address(wrapper_addr)}", err=True)
+
+    # Target vault for Aave is the Aave V3 Pool itself (not an Euler eVault)
+    from ..constants import AAVE_V3_POOL
+    target_vault = AAVE_V3_POOL
+    target_asset = position.debt_address  # WETH
+
+    # 1. Simulate createCollateralVault to predict CV address
+    create_args = [AAVE_V3, wrapper_addr, target_vault, ltv, target_asset]
+    sim = simulate_through_evc(fct, "createCollateralVault", create_args, sender=account)
+    if not sim["success"]:
+        click.echo(f"Create vault simulation failed: {sim['error']}", err=True)
+        _show_verbose_error(ctx, sim)
+        raise SystemExit(1)
+    predicted_cv = _format_sim_address(sim["result"])
+    click.echo(f"  Predicted vault: {predicted_cv}")
+
+    # 2. Approve aTokens to teleport operator
+    op = teleport_operator()
+    op_addr = str(op.address)
+    gas_kwargs = _build_gas_kwargs(**gas_extra)
+
+    if not dry_run:
+        if not ensure_allowance(
+            position.collateral_address, op_addr, position.collateral_amount, account,
+            skip_confirm=skip_confirm, max_approve=True, **gas_kwargs,
+        ):
+            click.echo("Approval declined.")
+            return
+
+    # 3. Build EVC batch: [createCV, enableOperator, executeTeleport, disableOperator]
+    # Matches the pattern from AaveOperatorsTest.t.sol:test_AaveV3TeleportOperator_SingleBatch
+    evc_instance = evc_contract()
+    evc_addr = str(evc_instance.address)
+    zero_addr = "0x0000000000000000000000000000000000000000"
+
+    create_data = fct.createCollateralVault.encode_input(*create_args)
+
+    # onBehalfOfAccount must be address(0) when targeting the EVC itself
+    enable_op_data = evc_instance.setAccountOperator.encode_input(sender, op_addr, True)
+    disable_op_data = evc_instance.setAccountOperator.encode_input(sender, op_addr, False)
+
+    # Use type(uint256).max for both amounts — the contract reads current
+    # on-chain balances at execution time (AaveV3TeleportOperator lines 71-75).
+    # This eliminates timing/staleness issues between simulation and execution.
+    uint256_max = 2**256 - 1
+    teleport_data = op.executeTeleport.encode_input(
+        predicted_cv, uint256_max, uint256_max,
+    )
+
+    batch_items = [
+        (str(fct.address), sender, 0, create_data),       # createCV
+        (evc_addr, zero_addr, 0, enable_op_data),          # enableOp (address(0))
+        (op_addr, sender, 0, teleport_data),               # executeTeleport
+        (evc_addr, zero_addr, 0, disable_op_data),         # disableOp (address(0))
+    ]
+
+    details = [
+        ("Protocol", "Aave V3"),
+        ("Intermediate Vault", iv_addr),
+        ("aToken Wrapper", wrapper_addr),
+        ("Target Vault", target_vault),
+        ("Liq LTV", f"{ltv} bp ({ltv / 100:.1f}%)"),
+        ("Collateral", f"{position.collateral_amount} aTokens (contract reads current balance)"),
+        ("Debt", f"{position.debt_amount} (contract reads current balance)"),
+        ("Teleport Operator", op_addr),
+        ("Predicted CV", predicted_cv),
+        ("Sender", sender),
+    ]
+
+    if dry_run:
+        # Full batch simulation requires aToken approval to teleport operator,
+        # which hasn't been granted yet (approval is done before the batch in
+        # non-dry-run mode). The createCV simulation above already validates
+        # the factory arguments.
+        click.echo("\nDry run — createCV simulation passed.")
+        click.echo("Batch items (4):")
+        click.echo("  1. createCollateralVault (validated)")
+        click.echo("  2. setAccountOperator(enable)")
+        click.echo("  3. executeTeleport")
+        click.echo("  4. setAccountOperator(disable)")
+        for label, value in details:
+            click.echo(f"  {label}: {value}")
+        return
+
+    # 4. Simulate batch (approval has been granted, so full simulation works)
+    sim_batch = simulate_tx(evc_instance, "batch", [batch_items], sender=account)
+    if not sim_batch["success"]:
+        err_msg = sim_batch.get("error", "")
+        click.echo(f"\nBatch simulation failed: {err_msg}", err=True)
+        _show_verbose_error(ctx, sim_batch)
+        raise SystemExit(1)
+
+    # 5. Confirm and execute
+    if not confirm_prompt("Migrate Aave position to Twyne", details, skip=skip_confirm):
+        click.echo("Cancelled.")
+        return
+
+    receipt = _send_tx(evc_instance.batch, [batch_items], account, gas_kwargs)
+    vault_address = _extract_vault_address_from_receipt(receipt, str(fct.address))
+    if vault_address:
+        click.echo(f"New Twyne vault: {vault_address}")
+    display_receipt(receipt)

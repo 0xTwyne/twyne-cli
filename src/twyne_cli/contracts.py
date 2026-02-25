@@ -124,6 +124,11 @@ def evc(address: str | None = None):
     return Contract(addr, abi=_load_abi("EVC"))
 
 
+def euler_evc():
+    """Get the Euler EVC contract instance."""
+    return Contract(get_address("eulerEvc"), abi=_load_abi("EVC"))
+
+
 def erc20(address: str):
     """Get ERC20 contract instance at a given address."""
     return Contract(address, abi=_load_abi("ERC20"))
