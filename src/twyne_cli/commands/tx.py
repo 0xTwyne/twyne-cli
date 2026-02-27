@@ -3,6 +3,7 @@
 import click
 
 from ..batch import build_batch_items, collect_approval_requirements, parse_batch_file
+from ..completions import complete_iv_address, complete_target_vault, complete_vault_address
 from ..constants import DEFAULT_SLIPPAGE
 from ..context import TwyneContext, pass_ctx
 from ..contracts import (
@@ -218,7 +219,7 @@ def collateral():
 
 
 @collateral.command()
-@click.argument("vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
 @click.argument("amount")
 @tx_options
 @pass_ctx
@@ -266,7 +267,7 @@ def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key
 
 
 @collateral.command(name="deposit-underlying")
-@click.argument("vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
 @click.argument("amount")
 @tx_options
 @pass_ctx
@@ -314,7 +315,7 @@ def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, 
 
 
 @collateral.command()
-@click.argument("vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
 @click.argument("amount")
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
@@ -357,7 +358,7 @@ def withdraw(ctx: TwyneContext, vault_address, amount, receiver, account_alias, 
 
 
 @collateral.command(name="redeem-underlying")
-@click.argument("vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
 @click.argument("amount")
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
@@ -400,7 +401,7 @@ def redeem_underlying(ctx: TwyneContext, vault_address, amount, receiver, accoun
 
 
 @collateral.command()
-@click.argument("vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
 @click.argument("amount")
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
@@ -443,7 +444,7 @@ def borrow(ctx: TwyneContext, vault_address, amount, receiver, account_alias, pr
 
 
 @collateral.command()
-@click.argument("vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
 @click.argument("amount")
 @tx_options
 @pass_ctx
@@ -496,7 +497,7 @@ def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, 
 
 
 @collateral.command(name="set-ltv")
-@click.argument("vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
 @click.argument("ltv", type=int)
 @tx_options
 @pass_ctx
@@ -534,7 +535,7 @@ def set_ltv(ctx: TwyneContext, vault_address, ltv, account_alias, private_key, d
 
 
 @collateral.command()
-@click.argument("vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
 @tx_options
 @pass_ctx
 def liquidate(ctx: TwyneContext, vault_address, account_alias, private_key, dry_run, skip_confirm, **_):
@@ -570,7 +571,7 @@ def liquidate(ctx: TwyneContext, vault_address, account_alias, private_key, dry_
 
 
 @collateral.command()
-@click.argument("vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
 @tx_options
 @pass_ctx
 def skim(ctx: TwyneContext, vault_address, account_alias, private_key, dry_run, skip_confirm, **_):
@@ -616,7 +617,7 @@ def credit():
 
 
 @credit.command(name="deposit")
-@click.argument("iv_address")
+@click.argument("iv_address", shell_complete=complete_iv_address)
 @click.argument("amount")
 @click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
               help="Which wrapper to use (euler or aave)")
@@ -672,7 +673,7 @@ def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alia
 
 
 @credit.command(name="deposit-underlying")
-@click.argument("iv_address")
+@click.argument("iv_address", shell_complete=complete_iv_address)
 @click.argument("amount")
 @click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
               help="Which wrapper to use (euler or aave)")
@@ -726,7 +727,7 @@ def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, a
 
 
 @credit.command(name="deposit-atokens")
-@click.argument("iv_address")
+@click.argument("iv_address", shell_complete=complete_iv_address)
 @click.argument("amount")
 @tx_options
 @pass_ctx
@@ -776,7 +777,7 @@ def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, privat
 
 
 @credit.command(name="withdraw")
-@click.argument("iv_address")
+@click.argument("iv_address", shell_complete=complete_iv_address)
 @click.argument("amount")
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
@@ -819,7 +820,7 @@ def credit_withdraw(ctx: TwyneContext, iv_address, amount, receiver, account_ali
 
 
 @credit.command(name="redeem")
-@click.argument("iv_address")
+@click.argument("iv_address", shell_complete=complete_iv_address)
 @click.argument("shares")
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
@@ -872,7 +873,7 @@ def operators():
 
 
 @operators.command()
-@click.argument("vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
 @click.argument("amount")
 @click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
               help="Protocol integration to use")
@@ -1032,7 +1033,7 @@ def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
 
 
 @operators.command()
-@click.argument("vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
 @click.argument("amount")
 @click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
               help="Protocol integration to use")
@@ -1117,8 +1118,8 @@ def deleverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
 
 
 @operators.command()
-@click.argument("vault_address")
-@click.argument("target_vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
+@click.argument("target_vault_address", shell_complete=complete_target_vault)
 @click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
               help="Protocol integration to use")
 @tx_options
@@ -1241,7 +1242,7 @@ def _build_close_position_batch(
 
 
 @operators.command(name="close-position")
-@click.argument("vault_address")
+@click.argument("vault_address", shell_complete=complete_vault_address)
 @click.option("--slippage", type=float, default=1.0,
               help="Swap slippage tolerance in percent (default: 1.0%)")
 @click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
@@ -1395,8 +1396,8 @@ def factory():
 
 
 @factory.command(name="create-vault")
-@click.argument("intermediate_vault")
-@click.argument("target_vault")
+@click.argument("intermediate_vault", shell_complete=complete_iv_address)
+@click.argument("target_vault", shell_complete=complete_target_vault)
 @click.option("--vault-type", type=int, default=0, help="Vault type: 0=Euler, 1=Aave (default: 0)")
 @click.option("--ltv", type=int, default=8500, help="Liquidation LTV in basis points (default: 8500 = 85%)")
 @click.option("--target-asset", default=None, help="Debt token address (required for Aave, ignored for Euler)")
@@ -1557,8 +1558,8 @@ def _build_open_position_batch(
 
 
 @factory.command(name="open-position")
-@click.argument("intermediate_vault")
-@click.argument("target_vault")
+@click.argument("intermediate_vault", shell_complete=complete_iv_address)
+@click.argument("target_vault", shell_complete=complete_target_vault)
 @click.option("--vault-type", type=int, default=0, help="Vault type: 0=Euler, 1=Aave (default: 0)")
 @click.option("--ltv", type=int, default=8500, help="Liquidation LTV in basis points (default: 8500 = 85%)")
 @click.option("--target-asset", default=None, help="Debt token address (required for Aave, ignored for Euler)")

@@ -3,6 +3,7 @@
 import click
 
 from ..cache import get_vault_cache
+from ..completions import complete_asset_or_iv
 from ..constants import DEFILLAMA_API_URL, DEFILLAMA_TWYNE_SLUG, MAXFACTOR
 from ..context import TwyneContext, pass_ctx
 from ..contracts import (
@@ -113,7 +114,7 @@ def overview(ctx: TwyneContext):
 
 
 @protocol.command()
-@click.argument("asset_or_iv_address")
+@click.argument("asset_or_iv_address", shell_complete=complete_asset_or_iv)
 @pass_ctx
 def rates(ctx: TwyneContext, asset_or_iv_address: str):
     """Show parameters for a collateral asset or intermediate vault address."""
