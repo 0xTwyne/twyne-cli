@@ -61,3 +61,27 @@ def clear_rpc():
         click.echo("RPC URL cleared. Will use Ape default provider.")
     else:
         click.echo("No custom RPC was configured.")
+
+
+@config.command("set-account")
+@click.argument("alias")
+def set_account(alias):
+    """Save a default signing account alias for transaction commands.
+
+    Example: twyne config set-account my-wallet
+    """
+    cfg = load_config()
+    cfg["default_account"] = alias
+    save_config(cfg)
+    click.echo(f"Default account set to '{alias}' (saved to {CONFIG_FILE})")
+
+
+@config.command("get-account")
+def get_account():
+    """Show the currently configured default signing account."""
+    cfg = load_config()
+    acct = cfg.get("default_account")
+    if acct:
+        click.echo(acct)
+    else:
+        click.echo("No default account configured. Use 'twyne config set-account <alias>'.")
