@@ -44,8 +44,16 @@ def overview(ctx: TwyneContext):
         vm = vault_manager()
         iv_map = intermediate_vaults()
 
-        # Reverse map: IV address → IV name
-        iv_addr_to_name = {addr.lower(): name for name, addr in iv_map.items()}
+        # Build reverse map: collateral asset address → IV name.
+        # Each IV's asset() returns its collateral token (e.g. eWETH).
+        asset_to_iv: dict[str, str] = {}
+        for iv_name, iv_addr in iv_map.items():
+            try:
+                iv_contract = credit_vault(iv_addr)
+                asset_addr = str(iv_contract.asset(block_identifier=block)).lower()
+                asset_to_iv[asset_addr] = iv_name
+            except Exception:
+                pass
 
         # Use cached vault+asset data instead of scanning events
         cache = get_vault_cache(ctx)
@@ -53,19 +61,18 @@ def overview(ctx: TwyneContext):
 
         asset_data: list[dict] = []
         for asset_addr_lower, _vault_addrs in unique_assets.items():
-            asset_addr = asset_addr_lower  # already lowercase from cache
+            asset_addr = asset_addr_lower
 
-            # Query VaultManager params live (governance-controlled, not cached)
+            # Query VaultManager params live (governance-controlled, not cached).
+            # Despite ABI param name, these mappings are keyed by collateral asset.
             try:
                 max_ltv = vm.maxTwyneLTVs(asset_addr, block_identifier=block)
                 ext_buffer = vm.externalLiqBuffers(asset_addr, block_identifier=block)
-                iv_addr = vm.getIntermediateVault(asset_addr, block_identifier=block)
-                iv_name = iv_addr_to_name.get(iv_addr.lower(), format_address(iv_addr))
+                iv_name = asset_to_iv.get(asset_addr_lower, "unknown")
 
                 asset_data.append({
                     "collateral_asset": asset_addr,
                     "intermediate_vault": iv_name,
-                    "iv_address": iv_addr,
                     "max_twyne_ltv_bps": max_ltv,
                     "max_twyne_ltv_pct": max_ltv / MAXFACTOR * 100,
                     "external_liq_buffer_bps": ext_buffer,
@@ -89,13 +96,13 @@ def overview(ctx: TwyneContext):
                     rows.append([format_address(a["collateral_asset"]), "?", "ERR", "ERR"])
                 else:
                     rows.append([
-                        format_address(a["collateral_asset"]),
                         a["intermediate_vault"],
+                        format_address(a["collateral_asset"]),
                         format_bps(a["max_twyne_ltv_bps"]),
                         format_bps(a["external_liq_buffer_bps"]),
                     ])
             output_table(
-                ["Collateral Asset", "Intermediate Vault", "Max LTV", "Ext Liq Buffer"],
+                ["Intermediate Vault", "Collateral Asset", "Max LTV~", "Ext Liq Buffer"],
                 rows,
                 title="Protocol Overview — Collateral Asset Parameters",
             )
