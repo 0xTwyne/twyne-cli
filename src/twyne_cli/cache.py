@@ -10,7 +10,6 @@ import tempfile
 from pathlib import Path
 
 import click
-from ape import Contract
 
 from .contracts import _load_abi, get_address
 
@@ -100,7 +99,7 @@ class VaultCache:
 
         Returns the number of new vaults discovered.
         """
-        from ape import chain
+        from ape import Contract, chain
 
         current_block = to_block if to_block is not None else chain.blocks.height
         from_block = self.last_scanned_block + 1 if self.last_scanned_block > 0 else MAINNET_START_BLOCK
