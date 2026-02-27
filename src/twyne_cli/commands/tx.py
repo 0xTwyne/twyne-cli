@@ -878,38 +878,139 @@ def operators():
               help="Protocol integration to use")
 @click.option("--slippage", type=float, default=DEFAULT_SLIPPAGE,
               help=f"Swap slippage tolerance (default: {DEFAULT_SLIPPAGE}%)")
-@click.option("--api-key", envvar="ONEINCH_API_KEY", default=None,
-              help="1inch API key (or set ONEINCH_API_KEY env var)")
+@click.option("--underlying-deposit", "underlying_deposit", default="0",
+              help="Additional underlying collateral to deposit from wallet (default: 0)")
 @tx_options
 @pass_ctx
-def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage, api_key,
-             account_alias, private_key, dry_run, skip_confirm, raw):
-    """Execute leverage via flash loan + 1inch swap.
+def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
+             underlying_deposit,
+             account_alias, private_key, dry_run, skip_confirm, raw, **_):
+    """Execute leverage via Morpho flash loan + Euler swap.
 
-    Borrows, swaps to collateral token, deposits — all atomically.
+    Flash borrows target asset, swaps to collateral, deposits into vault,
+    then borrows to repay the flash loan — all atomically in an EVC batch.
+
+    AMOUNT is the flash loan size in target asset units (e.g., USDC).
     """
+    import time
+
+    from ..constants import DEFAULT_DEADLINE_OFFSET, ZERO_ADDRESS
+
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key)
         cv = collateral_vault(vault_address)
-        decimals = _get_token_decimals(cv)
-        raw_amount = parse_amount(amount, decimals, raw=raw)
 
-        # The operator contract handles the flash loan + swap internally
+        # Derive token addresses from vault state
+        collateral_addr = str(cv.asset())       # eVault share token (e.g. eWETH)
+        target_asset_addr = str(cv.targetAsset())  # debt token (e.g. USDC)
+        evault = credit_vault(collateral_addr)
+        underlying_addr = str(evault.asset())   # underlying collateral (e.g. WETH)
+
+        # Get token info for amount parsing and display
+        target_token = erc20(target_asset_addr)
+        target_decimals = target_token.decimals()
+        target_symbol = target_token.symbol()
+        underlying_token = erc20(underlying_addr)
+        underlying_decimals = underlying_token.decimals()
+        underlying_symbol = underlying_token.symbol()
+
+        # Parse flash loan amount in target asset units (e.g. USDC with 6 decimals)
+        raw_flashloan = parse_amount(amount, target_decimals, raw=raw)
+
+        # Parse optional additional underlying collateral deposit from wallet
+        raw_underlying = 0
+        if underlying_deposit != "0":
+            raw_underlying = parse_amount(underlying_deposit, underlying_decimals, raw=raw)
+
         op = leverage_operator(protocol)
+        deadline = int(time.time()) + DEFAULT_DEADLINE_OFFSET
+
+        # Get the target vault (e.g. eUSDC) — needed by swap API for deposit cleanup
+        target_vault_addr = str(cv.targetVault())
+
+        # Get swap quote from Euler Swap API: target asset → underlying collateral
+        # receiver = eVault (collateral_addr) since underlying must land there for skim
+        # vault_in = target vault (eUSDC) for deposit cleanup of unused input tokens
+        quote = get_swap_quote(
+            chain_id=1,
+            token_in=target_asset_addr,       # selling target asset (e.g. USDC)
+            token_out=underlying_addr,         # buying underlying collateral (e.g. WETH)
+            amount=raw_flashloan,
+            receiver=collateral_addr,          # Euler eVault receives output for skim
+            origin=str(account.address),
+            slippage=slippage,
+            deadline=deadline,
+            vault_in=target_vault_addr,        # target vault for input token dust cleanup
+        )
+
+        # Extract swap data — swapperData format (single pre-compiled multicall blob)
+        # Frontend wraps this as 1-element bytes[] array for ISwapper.multicall
+        swapper_data_hex = quote["swap"]["swapperData"]
+        swap_data = [bytes.fromhex(swapper_data_hex[2:])] if swapper_data_hex != "0x" else []
+
+        # Minimum collateral output from swap (slippage already applied by API)
+        min_amount_out = int(quote["amountOutMin"])
+
+        # Handle approval for additional underlying deposit (operator pulls from user)
+        if raw_underlying > 0:
+            gas_kw = _build_gas_kwargs(**_)
+            if not ensure_allowance(underlying_addr, str(op.address), raw_underlying,
+                                    account, skip_confirm=skip_confirm, **gas_kw):
+                click.echo("Approval declined.")
+                return
+
+        # Build EVC batch: enable operator → executeLeverage → disable operator
+        evc_instance = evc_contract()
+        sender_addr = str(account.address)
+        items = []
+
+        # Item 1: Enable operator (EVC self-call → onBehalfOfAccount = zero)
+        enable_data = evc_instance.setAccountOperator.encode_input(
+            sender_addr, str(op.address), True
+        )
+        items.append((str(evc_instance.address), ZERO_ADDRESS, 0, enable_data))
+
+        # Item 2: Execute leverage (operator call → onBehalfOfAccount = sender)
+        # 7-param Morpho interface: (collateralVault, underlyingCollateralAmount, collateralAmount,
+        #   flashloanAmount, minAmountOut, deadline, swapData[])
+        leverage_data = op.executeLeverage.encode_input(
+            vault_address, raw_underlying, 0, raw_flashloan,
+            min_amount_out, deadline, swap_data
+        )
+        items.append((str(op.address), sender_addr, 0, leverage_data))
+
+        # Item 3: Disable operator (EVC self-call → onBehalfOfAccount = zero)
+        disable_data = evc_instance.setAccountOperator.encode_input(
+            sender_addr, str(op.address), False
+        )
+        items.append((str(evc_instance.address), ZERO_ADDRESS, 0, disable_data))
+
+        # Display summary
+        human_flashloan = raw_flashloan / 10**target_decimals
+        human_min_out = min_amount_out / 10**underlying_decimals
+
+        click.echo(f"\nLeverage: {vault_address}")
+        click.echo(f"  Flash loan:         {human_flashloan:.6f} {target_symbol}")
+        click.echo(f"  Min collateral out: {human_min_out:.6f} {underlying_symbol} (after {slippage}% slippage)")
+        if raw_underlying > 0:
+            human_underlying = raw_underlying / 10**underlying_decimals
+            click.echo(f"  Extra deposit:      {human_underlying:.6f} {underlying_symbol} from wallet")
 
         details = [
             ("Vault", vault_address),
             ("Protocol", protocol),
-            ("Amount", f"{amount} (raw: {raw_amount})"),
+            ("Flash loan", f"{human_flashloan:.6f} {target_symbol} (raw: {raw_flashloan})"),
+            ("Min collateral out", f"{human_min_out:.6f} {underlying_symbol}"),
             ("Slippage", f"{slippage}%"),
             ("Operator", str(op.address)),
-            ("Sender", str(account.address)),
+            ("Sender", sender_addr),
         ]
 
-        sim = simulate_tx(op, "executeLeverage", [vault_address, raw_amount, b""], sender=account)
+        # Simulate batch
+        sim = simulate_tx(evc_instance, "batch", [items], sender=account)
         if not sim["success"]:
-            click.echo(f"Simulation failed: {sim['error']}", err=True)
+            click.echo(f"\nBatch simulation failed: {sim['error']}", err=True)
             _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
@@ -917,11 +1018,14 @@ def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage, api_k
             click.echo("Dry run — simulation passed.")
             return
 
-        if not confirm_prompt(f"Leverage {amount} on {format_address(vault_address)}", details, skip_confirm):
+        # Confirm and execute
+        gas_kwargs = _build_gas_kwargs(**_)
+        if not confirm_prompt(f"Leverage {human_flashloan:.6f} {target_symbol} on {format_address(vault_address)}",
+                              details, skip_confirm):
             click.echo("Cancelled.")
             return
 
-        receipt = op.executeLeverage(vault_address, raw_amount, b"", sender=account)
+        receipt = _send_tx(evc_instance.batch, [items], account, gas_kwargs)
         display_receipt(receipt)
     finally:
         ctx.disconnect()
