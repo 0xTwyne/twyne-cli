@@ -1,9 +1,9 @@
-"""Protocol commands — overview, rates, ext-ltvs."""
+"""Protocol commands — overview, rates, ext-ltvs, tvl."""
 
 import click
 
 from ..cache import get_vault_cache
-from ..constants import MAXFACTOR
+from ..constants import DEFILLAMA_API_URL, DEFILLAMA_TWYNE_SLUG, MAXFACTOR
 from ..context import TwyneContext, pass_ctx
 from ..contracts import (
     aave_v3_pool,
@@ -15,8 +15,10 @@ from ..contracts import (
 from ..formatting import (
     format_address,
     format_bps,
+    format_usd,
     is_tty,
     output_json,
+    output_kv,
     output_table,
 )
 
@@ -165,7 +167,6 @@ def rates(ctx: TwyneContext, asset_or_iv_address: str):
         if ctx.force_json or not is_tty():
             output_json(rate_data)
         else:
-            from ..formatting import output_kv
             pairs = []
             for k, v in rate_data.items():
                 if k.endswith("_bps"):
@@ -177,6 +178,69 @@ def rates(ctx: TwyneContext, asset_or_iv_address: str):
             output_kv(pairs, title="Protocol Rates")
     finally:
         ctx.disconnect()
+
+
+# --------------------------------------------------------------------------- #
+# tvl command (DefiLlama — no RPC needed)
+# --------------------------------------------------------------------------- #
+
+
+@protocol.command()
+@pass_ctx
+def tvl(ctx: TwyneContext):
+    """Show Twyne TVL from DefiLlama (no RPC required)."""
+    import httpx
+
+    url = f"{DEFILLAMA_API_URL}/protocol/{DEFILLAMA_TWYNE_SLUG}"
+    resp = httpx.get(url, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+
+    chain_tvls = data.get("currentChainTvls", {})
+    eth_tvl = chain_tvls.get("Ethereum", 0)
+    borrowed = chain_tvls.get("borrowed", 0)
+
+    # Extract latest token breakdown
+    tokens_usd = []
+    chain_detail = data.get("chainTvls", {}).get("Ethereum", {})
+    usd_entries = chain_detail.get("tokensInUsd", [])
+    native_entries = chain_detail.get("tokens", [])
+
+    latest_usd = usd_entries[-1]["tokens"] if usd_entries else {}
+    latest_native = native_entries[-1]["tokens"] if native_entries else {}
+
+    for symbol, usd_val in sorted(latest_usd.items(), key=lambda x: x[1], reverse=True):
+        native_val = latest_native.get(symbol)
+        tokens_usd.append({
+            "symbol": symbol,
+            "usd": usd_val,
+            "amount": native_val,
+        })
+
+    if ctx.force_json or not is_tty():
+        output_json({
+            "tvl_usd": eth_tvl,
+            "borrowed_usd": borrowed,
+            "tokens": tokens_usd,
+        })
+    else:
+        output_kv(
+            [
+                ("TVL (Ethereum)", format_usd(eth_tvl)),
+                ("Borrowed", format_usd(borrowed)),
+            ],
+            title="Twyne Protocol TVL (DefiLlama)",
+        )
+        if tokens_usd:
+            rows = []
+            for t in tokens_usd:
+                amt = f"{t['amount']:,.4f}" if t["amount"] is not None else "—"
+                rows.append([t["symbol"], format_usd(t["usd"]), amt])
+            output_table(
+                ["Token", "USD Value", "Amount"],
+                rows,
+                title="Token Breakdown",
+            )
 
 
 # --------------------------------------------------------------------------- #
