@@ -24,3 +24,7 @@ DEFAULT_SLIPPAGE = 0.5
 
 # Default deadline offset for swap operations (20 minutes)
 DEFAULT_DEADLINE_OFFSET = 20 * 60
+
+# DefiLlama API
+DEFILLAMA_API_URL = "https://api.llama.fi"
+DEFILLAMA_TWYNE_SLUG = "twyne"

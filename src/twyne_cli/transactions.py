@@ -3,13 +3,12 @@
 import os
 
 import click
-from ape.exceptions import ContractLogicError
 
 
 def resolve_account(account_alias: str | None, private_key: str | None):
     """Resolve a signing account from alias or private key.
 
-    Priority: --account alias > --private-key flag > PRIVATE_KEY env var.
+    Priority: --account alias > --private-key flag > PRIVATE_KEY env var > config default_account.
     Returns an Ape AccountAPI instance.
     """
     from ape import accounts
@@ -27,8 +26,16 @@ def resolve_account(account_alias: str | None, private_key: str | None):
         eth_acct = EthAccount.from_key(pk)
         return TestAccount(index=0, address_str=eth_acct.address, private_key=pk)
 
+    # Fall back to config default_account
+    from .commands.config import load_config
+
+    default = load_config().get("default_account")
+    if default:
+        return accounts.load(default)
+
     raise click.UsageError(
-        "No signing account specified. Use --account <alias> or --private-key <key> or set PRIVATE_KEY env var."
+        "No signing account specified. Use --account <alias> or --private-key <key> or set PRIVATE_KEY env var.\n"
+        "Tip: run 'twyne init' to set up a default account."
     )
 
 
@@ -54,7 +61,7 @@ def parse_amount(value: str, decimals: int, raw: bool = False) -> int:
     return int(integer_part + frac_part)
 
 
-def _format_error_details(e: ContractLogicError) -> dict:
+def _format_error_details(e) -> dict:
     """Extract structured debug info from a ContractLogicError."""
     info = {"error": str(e)}
     if getattr(e, "revert_message", None):
@@ -70,6 +77,8 @@ def _format_error_details(e: ContractLogicError) -> dict:
 
 def simulate_tx(contract, fn_name: str, args: list, sender=None) -> dict:
     """Simulate a transaction via eth_call. Returns gas estimate or raises on revert."""
+    from ape.exceptions import ContractLogicError
+
     fn = getattr(contract, fn_name)
     try:
         result = fn.call(*args, sender=sender)
@@ -91,6 +100,8 @@ def simulate_through_evc(contract, fn_name: str, args: list, sender) -> dict:
     Direct eth_call may work for simple cases but fails when initialization
     logic requires proper EVC authentication context (e.g., Aave vaults).
     """
+    from ape.exceptions import ContractLogicError
+
     from .contracts import evc as evc_contract
 
     evc_instance = evc_contract()

@@ -1,9 +1,8 @@
 """Vault commands — health, info, list."""
 
 import click
-from ape.exceptions import ContractLogicError
-from ape_ethereum.multicall import Call
 
+from ..completions import complete_vault_address
 from ..context import TwyneContext, pass_ctx
 from ..constants import MAXFACTOR, USD_ADDRESS, WAD
 from ..cache import get_vault_cache
@@ -29,6 +28,8 @@ from ..formatting import (
 
 def _detect_protocol(cv_contract, block: int | None) -> str:
     """Detect whether a collateral vault is Aave or Euler based."""
+    from ape.exceptions import ContractLogicError
+
     try:
         atoken = cv_contract.aToken(block_identifier=block)
         if atoken and int(atoken, 16) != 0:
@@ -45,7 +46,7 @@ def vault():
 
 
 @vault.command()
-@click.argument("address")
+@click.argument("address", shell_complete=complete_vault_address)
 @pass_ctx
 def health(ctx: TwyneContext, address: str):
     """Show health factors for a collateral vault."""
@@ -84,10 +85,12 @@ def health(ctx: TwyneContext, address: str):
 
 
 @vault.command()
-@click.argument("address")
+@click.argument("address", shell_complete=complete_vault_address)
 @pass_ctx
 def info(ctx: TwyneContext, address: str):
     """Show full state of a collateral vault."""
+    from ape_ethereum.multicall import Call
+
     ctx.connect()
     try:
         block = ctx.resolve_block()

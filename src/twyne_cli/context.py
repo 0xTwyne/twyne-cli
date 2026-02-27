@@ -1,7 +1,6 @@
 """Shared CLI context — extracted to avoid circular imports."""
 
 import click
-from ape import networks
 
 
 class TwyneContext:
@@ -21,6 +20,7 @@ class TwyneContext:
         If --rpc or $RPC_URL is set, connects to that endpoint.
         Otherwise, uses Ape's built-in default provider (MEV Blocker RPC).
         """
+        from ape import networks
         # Suppress ape's INFO logging (uses ClickHandler → stdout, breaks JSON pipe)
         from ape.logging import logger as ape_logger
         ape_logger.set_level("DEBUG" if self.verbose else "WARNING")

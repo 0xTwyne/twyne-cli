@@ -1,9 +1,10 @@
-"""Protocol commands — overview, rates, ext-ltvs."""
+"""Protocol commands — overview, rates, ext-ltvs, tvl."""
 
 import click
 
 from ..cache import get_vault_cache
-from ..constants import MAXFACTOR
+from ..completions import complete_asset_or_iv
+from ..constants import DEFILLAMA_API_URL, DEFILLAMA_TWYNE_SLUG, MAXFACTOR
 from ..context import TwyneContext, pass_ctx
 from ..contracts import (
     aave_v3_pool,
@@ -15,8 +16,10 @@ from ..contracts import (
 from ..formatting import (
     format_address,
     format_bps,
+    format_usd,
     is_tty,
     output_json,
+    output_kv,
     output_table,
 )
 
@@ -44,8 +47,16 @@ def overview(ctx: TwyneContext):
         vm = vault_manager()
         iv_map = intermediate_vaults()
 
-        # Reverse map: IV address → IV name
-        iv_addr_to_name = {addr.lower(): name for name, addr in iv_map.items()}
+        # Build reverse map: collateral asset address → IV name.
+        # Each IV's asset() returns its collateral token (e.g. eWETH).
+        asset_to_iv: dict[str, str] = {}
+        for iv_name, iv_addr in iv_map.items():
+            try:
+                iv_contract = credit_vault(iv_addr)
+                asset_addr = str(iv_contract.asset(block_identifier=block)).lower()
+                asset_to_iv[asset_addr] = iv_name
+            except Exception:
+                pass
 
         # Use cached vault+asset data instead of scanning events
         cache = get_vault_cache(ctx)
@@ -53,19 +64,18 @@ def overview(ctx: TwyneContext):
 
         asset_data: list[dict] = []
         for asset_addr_lower, _vault_addrs in unique_assets.items():
-            asset_addr = asset_addr_lower  # already lowercase from cache
+            asset_addr = asset_addr_lower
 
-            # Query VaultManager params live (governance-controlled, not cached)
+            # Query VaultManager params live (governance-controlled, not cached).
+            # Despite ABI param name, these mappings are keyed by collateral asset.
             try:
                 max_ltv = vm.maxTwyneLTVs(asset_addr, block_identifier=block)
                 ext_buffer = vm.externalLiqBuffers(asset_addr, block_identifier=block)
-                iv_addr = vm.getIntermediateVault(asset_addr, block_identifier=block)
-                iv_name = iv_addr_to_name.get(iv_addr.lower(), format_address(iv_addr))
+                iv_name = asset_to_iv.get(asset_addr_lower, "unknown")
 
                 asset_data.append({
                     "collateral_asset": asset_addr,
                     "intermediate_vault": iv_name,
-                    "iv_address": iv_addr,
                     "max_twyne_ltv_bps": max_ltv,
                     "max_twyne_ltv_pct": max_ltv / MAXFACTOR * 100,
                     "external_liq_buffer_bps": ext_buffer,
@@ -89,13 +99,13 @@ def overview(ctx: TwyneContext):
                     rows.append([format_address(a["collateral_asset"]), "?", "ERR", "ERR"])
                 else:
                     rows.append([
-                        format_address(a["collateral_asset"]),
                         a["intermediate_vault"],
+                        format_address(a["collateral_asset"]),
                         format_bps(a["max_twyne_ltv_bps"]),
                         format_bps(a["external_liq_buffer_bps"]),
                     ])
             output_table(
-                ["Collateral Asset", "Intermediate Vault", "Max LTV", "Ext Liq Buffer"],
+                ["Intermediate Vault", "Collateral Asset", "Max LTV~", "Ext Liq Buffer"],
                 rows,
                 title="Protocol Overview — Collateral Asset Parameters",
             )
@@ -104,7 +114,7 @@ def overview(ctx: TwyneContext):
 
 
 @protocol.command()
-@click.argument("asset_or_iv_address")
+@click.argument("asset_or_iv_address", shell_complete=complete_asset_or_iv)
 @pass_ctx
 def rates(ctx: TwyneContext, asset_or_iv_address: str):
     """Show parameters for a collateral asset or intermediate vault address."""
@@ -158,7 +168,6 @@ def rates(ctx: TwyneContext, asset_or_iv_address: str):
         if ctx.force_json or not is_tty():
             output_json(rate_data)
         else:
-            from ..formatting import output_kv
             pairs = []
             for k, v in rate_data.items():
                 if k.endswith("_bps"):
@@ -170,6 +179,69 @@ def rates(ctx: TwyneContext, asset_or_iv_address: str):
             output_kv(pairs, title="Protocol Rates")
     finally:
         ctx.disconnect()
+
+
+# --------------------------------------------------------------------------- #
+# tvl command (DefiLlama — no RPC needed)
+# --------------------------------------------------------------------------- #
+
+
+@protocol.command()
+@pass_ctx
+def tvl(ctx: TwyneContext):
+    """Show Twyne TVL from DefiLlama (no RPC required)."""
+    import httpx
+
+    url = f"{DEFILLAMA_API_URL}/protocol/{DEFILLAMA_TWYNE_SLUG}"
+    resp = httpx.get(url, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+
+    chain_tvls = data.get("currentChainTvls", {})
+    eth_tvl = chain_tvls.get("Ethereum", 0)
+    borrowed = chain_tvls.get("borrowed", 0)
+
+    # Extract latest token breakdown
+    tokens_usd = []
+    chain_detail = data.get("chainTvls", {}).get("Ethereum", {})
+    usd_entries = chain_detail.get("tokensInUsd", [])
+    native_entries = chain_detail.get("tokens", [])
+
+    latest_usd = usd_entries[-1]["tokens"] if usd_entries else {}
+    latest_native = native_entries[-1]["tokens"] if native_entries else {}
+
+    for symbol, usd_val in sorted(latest_usd.items(), key=lambda x: x[1], reverse=True):
+        native_val = latest_native.get(symbol)
+        tokens_usd.append({
+            "symbol": symbol,
+            "usd": usd_val,
+            "amount": native_val,
+        })
+
+    if ctx.force_json or not is_tty():
+        output_json({
+            "tvl_usd": eth_tvl,
+            "borrowed_usd": borrowed,
+            "tokens": tokens_usd,
+        })
+    else:
+        output_kv(
+            [
+                ("TVL (Ethereum)", format_usd(eth_tvl)),
+                ("Borrowed", format_usd(borrowed)),
+            ],
+            title="Twyne Protocol TVL (DefiLlama)",
+        )
+        if tokens_usd:
+            rows = []
+            for t in tokens_usd:
+                amt = f"{t['amount']:,.4f}" if t["amount"] is not None else "—"
+                rows.append([t["symbol"], format_usd(t["usd"]), amt])
+            output_table(
+                ["Token", "USD Value", "Amount"],
+                rows,
+                title="Token Breakdown",
+            )
 
 
 # --------------------------------------------------------------------------- #

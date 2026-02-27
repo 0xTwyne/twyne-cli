@@ -23,14 +23,18 @@ def cli(ctx, rpc, force_json, block, no_cache, verbose):
 
 
 # Import and register subcommands after cli is defined to avoid circular imports
+from .commands.completion import completion  # noqa: E402
 from .commands.config import config  # noqa: E402
+from .commands.init import init  # noqa: E402
 from .commands.protocol import protocol  # noqa: E402
 from .commands.tx import tx  # noqa: E402
 from .commands.user import user  # noqa: E402
 from .commands.vault import vault  # noqa: E402
 
+cli.add_command(completion)
 cli.add_command(vault)
 cli.add_command(protocol)
 cli.add_command(user)
 cli.add_command(config)
 cli.add_command(tx)
+cli.add_command(init)

@@ -7,6 +7,34 @@ description: Guide for using the Twyne Protocol CLI to interact with Twyne on-ch
 
 Twyne CLI (`twyne`) is a Python tool for interacting with the Twyne credit delegation protocol on Ethereum mainnet. Read operations (vault health, protocol state) and write operations (open/close positions, deposit, borrow, leverage).
 
+## CRITICAL: You Must Verify On-Chain Before Giving Commands
+
+**NEVER guess, assume, or hardcode protocol parameter values.** Every value you put into a transaction command — LTV, addresses, target vaults — MUST come from on-chain state that **you query yourself** via the CLI. Do not invent numbers. Do not use placeholders. Do not tell the user to look things up.
+
+**YOU (the agent) must run the read commands yourself using the Bash tool, read the output, extract the values, and give the user a single ready-to-execute command with all values filled in.** The user should never have to run verification commands or fill in placeholders — that is your job.
+
+**Workflow for any transaction command:**
+
+1. **You run** the appropriate read command(s) via Bash (e.g. `uv run twyne protocol overview`, `uv run twyne protocol rates <iv>`)
+2. **You read** the output and extract: max liqLTV, target vault address, available IVs, etc.
+3. **You give the user** a complete, copy-pasteable command with all real values filled in
+4. **You briefly note** what you verified (e.g. "Max liqLTV for this pair is 94% per protocol overview")
+
+| What you need | You run this |
+|---------------|-------------|
+| Max liqLTV for a collateral/debt pair | `uv run twyne protocol overview` — read the max Twyne LTV for the relevant IV |
+| External liquidation LTV, beta_safe | `uv run twyne protocol ext-ltvs` — read the external LTV params |
+| Target vault address for a debt token | `uv run twyne protocol overview` or `uv run twyne protocol rates <iv-address>` — get the actual target vault |
+| Current vault state before modifying | `uv run twyne vault info <vault>` |
+| Available IVs and their collateral types | `uv run twyne protocol overview` |
+
+**Rules:**
+- If the user doesn't specify a liqLTV, query the max on-chain and use it (or lower). Never exceed the on-chain max — it will revert.
+- If the user requests a specific liqLTV, verify it doesn't exceed the on-chain max before giving the command. If it exceeds, warn them and use the on-chain max instead.
+- Do not assume target vault addresses — look them up yourself via `protocol overview` or `protocol rates`.
+- Never use placeholders like `<TARGET_VAULT>` or `<MAX_LTV>` for values you can query. Only use placeholders for user-specific values you cannot know (e.g. `<your-account>`).
+- The Known Intermediate Vaults table below is for quick IV name→address lookup only. All other values must be queried on-chain.
+
 ## How to Respond
 
 **Match your verbosity to the user's specificity.** There are three modes:
@@ -18,7 +46,10 @@ When the user's intent is fully specified — they name the action, the tokens, 
 A fully specified request looks like: "Open a position with 2 wstETH collateral borrowing WETH on Euler at 85% liqLTV" or "Close my vault at 0xABC123" or "Deposit 5 WETH as credit LP into the Euler IV."
 
 In this mode:
-- Lead with the command(s) they need to run, ready to copy-paste
+- **First, run the necessary read commands yourself** (via Bash tool) to get on-chain values — LTV limits, target vault addresses, etc. Do NOT tell the user to run these; you run them.
+- **Give the user a single, complete, copy-pasteable command** with all protocol values filled in from your query results. No placeholders for values you can look up.
+- Briefly note what you verified (e.g. "Max liqLTV for this pair is 94% per `protocol overview`")
+- **For complex operator commands** (close-position, leverage, deleverage, teleport, migrate), add one sentence explaining what the transaction will do under the hood — see the "What Operator Commands Do" section below
 - Mention `--dry-run` once as a safety check
 - No protocol explainers, no "what is a Credit LP" sections
 
@@ -47,7 +78,7 @@ For each action, here are the parameters you need. If any are missing from the u
 | Protocol | "Euler or Aave?" | Euler (default, `--vault-type 0`) supports more pairs. Aave (`--vault-type 1`) requires `--target-asset`. |
 | Deposit amount | "How much collateral are you depositing?" | In human units (e.g. `2.0` = 2 wstETH). |
 | Borrow amount | "Do you want to borrow immediately, or just deposit for now?" | Optional. Can borrow later via `tx collateral borrow`. |
-| Liquidation LTV | "What liquidation LTV do you want?" | Range: the minimum is roughly `extLiqLTV * buffer / 10000` (protocol-dependent), the max is shown by `protocol overview` (typically 95-98%). Higher = more leverage but closer to liquidation. 85% (8500 bps) is a moderate default. Explain: "At 85% liqLTV, you'll be liquidated if your debt reaches 85% of your collateral value. Higher means more leverage but less safety margin." |
+| Liquidation LTV | "What liquidation LTV do you want?" | **You will query the on-chain max** via `twyne protocol overview` before giving the command. The max varies per collateral/debt pair. If the user doesn't specify, you will use the on-chain max. If they specify one, you verify it doesn't exceed the max. Higher = more leverage but less safety margin. Explain the tradeoff with the actual on-chain max as the ceiling. |
 
 **Credit LP deposit — required parameters:**
 
@@ -129,6 +160,21 @@ twyne tx operators leverage <vault> <amount>              # flash loan + swap to
 twyne tx operators deleverage <vault> <amount> [--slippage 1.0]
 twyne tx operators teleport <source-vault> <target-vault>
 ```
+
+### What Operator Commands Do
+
+When giving a user an operator command (anything beyond simple deposit/withdraw/borrow/repay), **always include a one-sentence explanation of what will happen on-chain.** Users should understand the mechanics before submitting.
+
+| Command | What to tell the user |
+|---------|----------------------|
+| `close-position` | "This will swap a portion of your collateral into debt tokens to repay your liability, then withdraw the remaining collateral to your wallet." |
+| `leverage` | "This will flash-borrow debt tokens, swap them into your collateral token, deposit the collateral, and borrow to repay the flash loan — all atomically." |
+| `deleverage` | "This will flash-borrow collateral tokens, repay a portion of your debt, withdraw collateral, and repay the flash loan — reducing your leverage." |
+| `teleport` | "This will move your position from one collateral vault to another (e.g. migrating between IVs or target vaults) in a single atomic transaction." |
+| `migrate-position` | "This will migrate an existing Euler or Aave position into Twyne by creating a collateral vault and moving your assets atomically." |
+| `open-position` | "This will create a new collateral vault, deposit your collateral, and optionally borrow — all in a single atomic EVC batch." |
+
+These explanations are **required** even in Mode 1 (Direct Execution). Simple operations (deposit, withdraw, borrow, repay, set-ltv) do not need explanations.
 
 ### Transactions — Migration
 ```bash
