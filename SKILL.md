@@ -49,6 +49,7 @@ In this mode:
 - **First, run the necessary read commands yourself** (via Bash tool) to get on-chain values — LTV limits, target vault addresses, etc. Do NOT tell the user to run these; you run them.
 - **Give the user a single, complete, copy-pasteable command** with all protocol values filled in from your query results. No placeholders for values you can look up.
 - Briefly note what you verified (e.g. "Max liqLTV for this pair is 94% per `protocol overview`")
+- **For complex operator commands** (close-position, leverage, deleverage, teleport, migrate), add one sentence explaining what the transaction will do under the hood — see the "What Operator Commands Do" section below
 - Mention `--dry-run` once as a safety check
 - No protocol explainers, no "what is a Credit LP" sections
 
@@ -159,6 +160,21 @@ twyne tx operators leverage <vault> <amount>              # flash loan + swap to
 twyne tx operators deleverage <vault> <amount> [--slippage 1.0]
 twyne tx operators teleport <source-vault> <target-vault>
 ```
+
+### What Operator Commands Do
+
+When giving a user an operator command (anything beyond simple deposit/withdraw/borrow/repay), **always include a one-sentence explanation of what will happen on-chain.** Users should understand the mechanics before submitting.
+
+| Command | What to tell the user |
+|---------|----------------------|
+| `close-position` | "This will swap a portion of your collateral into debt tokens to repay your liability, then withdraw the remaining collateral to your wallet." |
+| `leverage` | "This will flash-borrow debt tokens, swap them into your collateral token, deposit the collateral, and borrow to repay the flash loan — all atomically." |
+| `deleverage` | "This will flash-borrow collateral tokens, repay a portion of your debt, withdraw collateral, and repay the flash loan — reducing your leverage." |
+| `teleport` | "This will move your position from one collateral vault to another (e.g. migrating between IVs or target vaults) in a single atomic transaction." |
+| `migrate-position` | "This will migrate an existing Euler or Aave position into Twyne by creating a collateral vault and moving your assets atomically." |
+| `open-position` | "This will create a new collateral vault, deposit your collateral, and optionally borrow — all in a single atomic EVC batch." |
+
+These explanations are **required** even in Mode 1 (Direct Execution). Simple operations (deposit, withdraw, borrow, repay, set-ltv) do not need explanations.
 
 ### Transactions — Migration
 ```bash
