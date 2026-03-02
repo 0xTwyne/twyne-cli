@@ -233,6 +233,11 @@ CLI (Click via Ape)
 | `PRIVATE_KEY` | Signing key for transactions |
 | `TWYNE_*` | Override specific addresses from registry |
 
+## AI Assistant Rules
+
+- **Never speculate about on-chain protocol parameters.** LTV limits, health factors, interest rates, supported pairs, and all other protocol parameters are on-chain and can change. Always query them using the CLI (`twyne protocol overview`, `twyne protocol ext-ltvs`, `twyne protocol rates`, `twyne vault health`, etc.) before answering questions about what the protocol supports or whether a strategy is possible.
+- **Never say something is impossible without checking first.** If a user asks whether a position, leverage level, or strategy is feasible, run the relevant query commands before responding. Do not guess based on "typical DeFi" assumptions.
+
 ## Conventions
 
 - LTV values are in basis points (1e4 = 100%). Divide by `MAXFACTOR` for display.
