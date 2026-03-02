@@ -8,7 +8,7 @@ from importlib import resources
 def _contract(address, abi):
     """Lazy wrapper around ape.Contract — defers ape import to first use."""
     from ape import Contract
-    return _contract(address, abi=abi)
+    return Contract(address, abi=abi)
 
 
 # --------------------------------------------------------------------------- #
