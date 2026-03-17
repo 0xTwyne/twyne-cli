@@ -31,6 +31,13 @@ AAVE_MIGRATION_PAIRS = [
         "collateral": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",  # wstETH
         "debt": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # WETH
         "atoken": "0x0B925eD163218f6662a35e0f0371Ac234f9E9371",  # awstETH
+        "iv_name": "aave_awstETH",
+    },
+    {
+        "collateral": "0x9Bf45ab47747F4B4dD09B3C2c73953484b4eB375",  # PT-srUSDe-2APR2026
+        "debt": "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3",  # USDe
+        "atoken": "0x1241ec22C9BdF16BA1Eb636F2a8de7e28A4343Cf",  # aEthPT_srUSDe
+        "iv_name": "aave_aPT_srUSDe",
     },
 ]
 
@@ -271,7 +278,10 @@ def discover_aave_positions(user_address: str) -> list[DiscoveredPosition]:
             debt_decimals = debt_token.decimals()
 
             # Find matching Twyne IV
-            iv_addr = get_address("intermediateVaults.aave_awstETH")
+            iv_name = pair.get("iv_name")
+            if not iv_name:
+                continue
+            iv_addr = get_address(f"intermediateVaults.{iv_name}")
             if not iv_addr:
                 continue
 

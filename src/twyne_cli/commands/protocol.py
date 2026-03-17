@@ -28,6 +28,7 @@ from ..formatting import (
 # aaveIVToFactoryVault, so updating this map at the same time is acceptable.
 AAVE_EMODE_MAP: dict[str, int] = {
     "aave_awstETH": 1,
+    "aave_aPT_srUSDe": 39,  # PT_srUSDe_2APR2026_sUSDe__USDe (92% LTV, 94% liq threshold)
 }
 
 
@@ -312,7 +313,7 @@ def _fetch_aave_pairs(iv_name: str, iv_addr: str, vm, pool, block) -> list[dict]
 
     return [{
         "iv_name": iv_name,
-        "debt_vault": f"WETH(eMode{emode_id})",
+        "debt_vault": f"{emode_data[4]}(eMode{emode_id})" if emode_data[4] else f"eMode{emode_id}",
         "emode_id": emode_id,
         "ext_liq_ltv_bps": liq_ltv,
         "ext_liq_ltv_pct": liq_ltv / MAXFACTOR * 100,
