@@ -1305,10 +1305,10 @@ def close_position(ctx: TwyneContext, vault_address, slippage, protocol,
         # When liqLTV > extLiqLTV * buffer / MAXFACTOR, credit is reserved from the IV.
         # Lowering liqLTV to the minimum releases all credit, allowing full withdrawal.
         # Min liqLTV = ceil(extLiqLTV * buffer / MAXFACTOR)
-        # NOTE: The deployed VaultManager maps externalLiqBuffers and maxTwyneLTVs
-        # by collateral asset address (eVault share token), not by IV address.
+        # VaultManager maps externalLiqBuffers and maxTwyneLTVs by IV address (v1.0.5+).
         vm = vault_manager()
-        ext_liq_buffer = vm.externalLiqBuffers(asset_addr)
+        iv_addr = str(cv_instance.intermediateVault())
+        ext_liq_buffer = vm.externalLiqBuffers(iv_addr)
         target_evault = credit_vault(target_vault_addr)
         ext_liq_ltv = target_evault.LTVLiquidation(asset_addr)
         from ..constants import MAXFACTOR

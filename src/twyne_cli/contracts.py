@@ -49,7 +49,7 @@ def get_address(key: str) -> str:
     Checks environment variable TWYNE_{KEY} first (uppercase), then falls back
     to the bundled addresses/mainnet.json.
 
-    Keys: healthStatViewer, vaultManager, collateralVaultFactory, oracleRouter,
+    Keys: vaultManager, collateralVaultFactory, oracleRouter,
           aaveOracleRouter, intermediateVaults.euler_eWETH, etc.
     """
     env_key = f"TWYNE_{key.upper()}"
@@ -73,11 +73,6 @@ def get_address(key: str) -> str:
 # --------------------------------------------------------------------------- #
 # Contract constructors
 # --------------------------------------------------------------------------- #
-
-
-def health_stat_viewer():
-    """Get HealthStatViewer contract instance."""
-    return _contract(get_address("healthStatViewer"), abi=_load_abi("HealthStatViewer"))
 
 
 def vault_manager():
