@@ -1,22 +1,59 @@
 """Shared fixtures for integration tests against Anvil fork.
 
 Prerequisites:
-    anvil --fork-url <RPC_URL> --fork-block-number 24520000 --port 8454 --accounts 10 --balance 10000
+    anvil --fork-url $RPC_URL_1 --fork-block-number 25040000 --port 8454 --accounts 10 --balance 10000
+
+The fork URL is loaded at import time from `<repo-root>/.env` (key `RPC_URL_1`)
+or from the shell environment, in that order. An explicit `ANVIL_FORK_URL`
+override still wins.
 """
 
 import os
+from pathlib import Path
 
 import httpx
 import pytest
 from ape import accounts, networks
 
+
+def _load_dotenv() -> None:
+    """Minimal .env loader so tests pick up RPC keys without python-dotenv.
+
+    Walks up from this file looking for a `.env`. Lines of the form `KEY=value`
+    are merged into os.environ unless the key is already set (shell wins).
+    """
+    here = Path(__file__).resolve()
+    for parent in (here.parent, *here.parents):
+        candidate = parent / ".env"
+        if candidate.is_file():
+            for raw in candidate.read_text().splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+            return
+
+
+_load_dotenv()
+
+
 # ---------------------------------------------------------------------------
-# Addresses (mainnet at block 24520000)
+# Addresses (mainnet at block 25040000 — post v1.0.5 contract upgrade)
 # ---------------------------------------------------------------------------
 ANVIL_RPC = os.environ.get("ANVIL_RPC_URL", "http://localhost:8454")
-# Fork RPC URL used by Anvil — needed for anvil_reset between tests
-FORK_RPC = os.environ.get("ANVIL_FORK_URL", "https://ethereum-rpc.publicnode.com")
-FORK_BLOCK = 24520000
+# Fork RPC: explicit ANVIL_FORK_URL wins; otherwise fall back to RPC_URL_1
+# (loaded from .env) and finally to the public free RPC (which only supports
+# very recent blocks).
+FORK_RPC = (
+    os.environ.get("ANVIL_FORK_URL")
+    or os.environ.get("RPC_URL_1")
+    or "https://ethereum-rpc.publicnode.com"
+)
+FORK_BLOCK = 25040000
 WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 WSTETH = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
 EULER_EWETH = "0xD8b27CF359b7D15710a5BE299AF6e7Bf904984C2"  # Euler eWETH vault token
@@ -36,7 +73,7 @@ VAULT_MANAGER_OWNER = "0x8C54cb62900Ec252E7992C85a5b7078A8AF4Fd7F"
 EULER_TARGET_VAULT = "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9"  # Euler USDC vault
 AAVE_V3_POOL = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"  # Aave V3 Pool (target vault for Aave)
 DEFAULT_LIQ_LTV = 9000  # 90% in basis points (must be > ~8700 for this pair)
-MAX_TWYNE_LTV = 9300  # 93% — governance max for this Euler IV
+MAX_TWYNE_LTV = 9400  # 94% — governance max for this Euler IV at block 25040000 (post v1.0.5)
 MAX_AAVE_LTV = 9800  # 98% — governance max for Aave awstETH IV
 EXTERNAL_LIQ_BUFFER = 10000  # 100% (beta_safe = 1.0)
 TWYNE_EVC = "0xef39D6493884C4C84D38a4bFF879Ce16CEdE702a"
@@ -147,9 +184,10 @@ def _configure_vault_manager():
     _set_balance(VAULT_MANAGER_OWNER, hex(10 * 10**18))
     _impersonate(VAULT_MANAGER_OWNER)
 
-    # setMaxLiquidationLTV(address,uint16) — selector 0x950bc62a
-    calldata = bytes.fromhex("950bc62a") + abi_encode(
-        ["address", "uint16"], [EULER_EWETH_IV, MAX_TWYNE_LTV]
+    # v1.0.5: setMaxLiquidationLTV(address,uint16,uint32) — selector 0x389bd6b4
+    # rampDuration=0 means instant change (no ramp).
+    calldata = bytes.fromhex("389bd6b4") + abi_encode(
+        ["address", "uint16", "uint32"], [EULER_EWETH_IV, MAX_TWYNE_LTV, 0]
     )
     tx1 = _rpc_call("eth_sendTransaction", [{
         "from": VAULT_MANAGER_OWNER,
@@ -160,9 +198,9 @@ def _configure_vault_manager():
     r1 = _wait_for_receipt(tx1)
     assert r1["status"] == "0x1", f"setMaxLiquidationLTV failed: {r1}"
 
-    # setExternalLiqBuffer(address,uint16) — selector 0xda7f7f80
-    calldata = bytes.fromhex("da7f7f80") + abi_encode(
-        ["address", "uint16"], [EULER_EWETH_IV, EXTERNAL_LIQ_BUFFER]
+    # v1.0.5: setExternalLiqBuffer(address,uint16,uint32) — selector 0xe17e20bd
+    calldata = bytes.fromhex("e17e20bd") + abi_encode(
+        ["address", "uint16", "uint32"], [EULER_EWETH_IV, EXTERNAL_LIQ_BUFFER, 0]
     )
     tx2 = _rpc_call("eth_sendTransaction", [{
         "from": VAULT_MANAGER_OWNER,
@@ -196,9 +234,9 @@ def _configure_aave_vault_manager():
     _set_balance(VAULT_MANAGER_OWNER, hex(10 * 10**18))
     _impersonate(VAULT_MANAGER_OWNER)
 
-    # setMaxLiquidationLTV(address,uint16) — selector 0x950bc62a
-    calldata = bytes.fromhex("950bc62a") + abi_encode(
-        ["address", "uint16"], [AAVE_AWSTETH_IV, MAX_AAVE_LTV]
+    # v1.0.5: setMaxLiquidationLTV(address,uint16,uint32) — selector 0x389bd6b4
+    calldata = bytes.fromhex("389bd6b4") + abi_encode(
+        ["address", "uint16", "uint32"], [AAVE_AWSTETH_IV, MAX_AAVE_LTV, 0]
     )
     tx1 = _rpc_call("eth_sendTransaction", [{
         "from": VAULT_MANAGER_OWNER, "to": VAULT_MANAGER,
@@ -207,9 +245,9 @@ def _configure_aave_vault_manager():
     r1 = _wait_for_receipt(tx1)
     assert r1["status"] == "0x1", f"setMaxLiquidationLTV (Aave) failed: {r1}"
 
-    # setExternalLiqBuffer(address,uint16) — selector 0xda7f7f80
-    calldata = bytes.fromhex("da7f7f80") + abi_encode(
-        ["address", "uint16"], [AAVE_AWSTETH_IV, EXTERNAL_LIQ_BUFFER]
+    # v1.0.5: setExternalLiqBuffer(address,uint16,uint32) — selector 0xe17e20bd
+    calldata = bytes.fromhex("e17e20bd") + abi_encode(
+        ["address", "uint16", "uint32"], [AAVE_AWSTETH_IV, EXTERNAL_LIQ_BUFFER, 0]
     )
     tx2 = _rpc_call("eth_sendTransaction", [{
         "from": VAULT_MANAGER_OWNER, "to": VAULT_MANAGER,
@@ -491,13 +529,15 @@ def _set_ltv_via_evc(sender_account, cv_address, ltv):
 # Vault creation helper (low-level raw-RPC fixture for test setup)
 # ---------------------------------------------------------------------------
 
-# The deployed factory has a 5-arg signature:
+# v1.0.5 factory signature:
 #   createCollateralVault(uint8 _vaultType, address _intermediateVault,
 #                         address _targetVault, uint256 _liqLTV, address _targetAsset)
-# and requires callThroughEVC (calls must go through EVC.batch()).
+# requires callThroughEVC (calls must go through EVC.batch()).
 #
-# This raw-RPC helper is faster than invoking the CLI for fixture setup.
-# It uses eth_abi encoding to call the factory directly via EVC.batch().
+# Note: pre-v1.0.5 the 2nd arg was "asset" (eVault token) and the 5th was the
+# intermediate vault. v1.0.5 swapped these semantically (selector unchanged
+# because the type signature is identical). _targetAsset = ZERO_ADDRESS lets
+# the factory derive it from the target vault.
 
 _FACTORY_SELECTOR = bytes.fromhex("3c7269d1")  # createCollateralVault(uint8,address,address,uint256,address)
 _EVC_CALL_SELECTOR = bytes.fromhex("1f8b5215")  # call(address,address,uint256,bytes)
@@ -508,20 +548,20 @@ _VAULT_CREATED_TOPIC_HEX = "d5c014427d17eead1b9e8111804901d992255c3982e066ff0b19
 
 def _create_vault_via_evc(
     sender_account,
-    category_id=0,
-    asset=EULER_EWETH,
+    vault_type=0,
+    intermediate_vault=EULER_EWETH_IV,
     target_vault=EULER_TARGET_VAULT,
     liq_ltv=DEFAULT_LIQ_LTV,
-    intermediate_vault=EULER_EWETH_IV,
+    target_asset=ZERO_ADDRESS,
 ):
-    """Create a collateral vault via EVC.call() with the correct v2 factory signature.
+    """Create a collateral vault via EVC.batch() with the v1.0.5 factory signature.
 
     Args:
-        category_id: Vault category (0 for default)
-        asset: Collateral token address (e.g., eWETH)
+        vault_type: 0 = Euler, 1 = Aave V3
+        intermediate_vault: Twyne intermediate vault (CreditEVault) address
         target_vault: Must be an allowed target vault in VaultManager
-        liq_ltv: Liquidation LTV in basis points (8500 = 85%)
-        intermediate_vault: The intermediate vault (CreditEVault) address
+        liq_ltv: Liquidation LTV in basis points (e.g. 9000 = 90%)
+        target_asset: Debt asset; ZERO_ADDRESS lets the factory derive from target_vault
 
     Returns the new vault address as a string.
     """
@@ -529,10 +569,10 @@ def _create_vault_via_evc(
 
     caller = str(sender_account.address)
 
-    # Encode factory calldata
+    # Encode factory calldata (v1.0.5 arg order)
     factory_calldata = _FACTORY_SELECTOR + abi_encode(
         ["uint8", "address", "address", "uint256", "address"],
-        [category_id, asset, target_vault, liq_ltv, intermediate_vault],
+        [vault_type, intermediate_vault, target_vault, liq_ltv, target_asset],
     )
 
     # Factory has _callThroughEVC modifier — must call via EVC.batch(), not directly.

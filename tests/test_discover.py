@@ -190,11 +190,10 @@ class TestAaveDiscovery:
     """Tests for discover_aave_positions."""
 
     @patch("twyne_cli.discover.vault_manager")
-    @patch("twyne_cli.discover.resolve_aave_factory_vault", return_value="0xFaBA8f777996C0C28fe9e6554D84cB30ca3e1881")
     @patch("twyne_cli.discover.get_address", return_value=AAVE_IV)
     @patch("twyne_cli.discover.erc20")
     @patch("twyne_cli.discover.aave_v3_pool")
-    def test_discover_aave_positions(self, mock_pool, mock_erc20_fn, mock_get_addr, mock_resolve, mock_vm):
+    def test_discover_aave_positions(self, mock_pool, mock_erc20_fn, mock_get_addr, mock_vm):
         """Discovers Aave wstETH/WETH position with eMode-aware liqLTV."""
         from twyne_cli.discover import discover_aave_positions
 
