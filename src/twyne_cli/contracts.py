@@ -4,6 +4,9 @@ import json
 import os
 from importlib import resources
 
+from .chains import ChainSpec, active_chain
+from .exceptions import EulerNotSupportedError, OperatorsNotSupportedError
+
 
 def _contract(address, abi):
     """Lazy wrapper around ape.Contract — defers ape import to first use."""
@@ -27,39 +30,41 @@ def _load_abi(name: str) -> list:
 
 
 # --------------------------------------------------------------------------- #
-# Address registry
+# Address registry (per-chain, cached by chain_id)
 # --------------------------------------------------------------------------- #
 
-_ADDRESSES: dict | None = None
+_ADDRESSES: dict[int, dict] = {}
 
 
-def _load_addresses() -> dict:
-    """Load mainnet addresses (cached). Env overrides take precedence."""
-    global _ADDRESSES
-    if _ADDRESSES is None:
-        ref = resources.files("twyne_cli") / "addresses" / "mainnet.json"
-        _ADDRESSES = json.loads(ref.read_text())
-    return _ADDRESSES
+def _load_addresses(chain: ChainSpec | None = None) -> dict:
+    """Load address registry for the given chain (defaults to active). Cached by chain_id."""
+    spec = chain or active_chain()
+    cached = _ADDRESSES.get(spec.chain_id)
+    if cached is not None:
+        return cached
+    ref = resources.files("twyne_cli") / "addresses" / spec.addresses_file
+    data = json.loads(ref.read_text())
+    _ADDRESSES[spec.chain_id] = data
+    return data
 
 
 def get_address(key: str) -> str:
     """
-    Get a contract address by key.
+    Get a contract address by key for the active chain.
 
     Checks environment variable TWYNE_{KEY} first (uppercase), then falls back
-    to the bundled addresses/mainnet.json.
+    to the bundled per-chain registry.
 
     Keys: vaultManager, collateralVaultFactory, oracleRouter,
-          aaveOracleRouter, intermediateVaults.euler_eWETH, etc.
+          aaveOracleRouter, intermediateVaults.aave_aWETH, etc.
     """
-    env_key = f"TWYNE_{key.upper()}"
+    env_key = f"TWYNE_{key.upper().replace('.', '_')}"
     env_val = os.environ.get(env_key)
     if env_val:
         return env_val
 
     addrs = _load_addresses()
 
-    # Support dotted keys like "intermediateVaults.euler_eWETH"
     parts = key.split(".")
     obj = addrs
     for part in parts:
@@ -107,13 +112,17 @@ def aave_oracle():
 
 def aave_v3_pool():
     """Get Aave V3 Pool contract instance."""
-    from .constants import AAVE_V3_POOL
-
-    return _contract(AAVE_V3_POOL, abi=_load_abi("AaveV3Pool"))
+    addr = get_address("aavePool")
+    if not addr:
+        # Back-compat: mainnet hardcoded fallback for older callers that haven't been
+        # updated to the per-chain registry yet.
+        from .constants import AAVE_V3_POOL
+        addr = AAVE_V3_POOL
+    return _contract(addr, abi=_load_abi("AaveV3Pool"))
 
 
 def intermediate_vaults() -> dict[str, str]:
-    """Return dict of intermediate vault name → address."""
+    """Return dict of intermediate vault name → address for the active chain."""
     addrs = _load_addresses()
     return addrs.get("intermediateVaults", {})
 
@@ -126,6 +135,8 @@ def evc(address: str | None = None):
 
 def euler_evc():
     """Get the Euler EVC contract instance."""
+    if not active_chain().supports_euler:
+        raise EulerNotSupportedError(active_chain())
     return _contract(get_address("eulerEvc"), abi=_load_abi("EVC"))
 
 
@@ -134,25 +145,45 @@ def erc20(address: str):
     return _contract(address, abi=_load_abi("ERC20"))
 
 
+def _check_operators_supported() -> None:
+    chain = active_chain()
+    if not chain.supports_operators:
+        raise OperatorsNotSupportedError(chain)
+
+
 def leverage_operator(protocol: str = "euler"):
     """Get leverage operator contract. Protocol: 'euler' or 'aave'."""
+    _check_operators_supported()
     key = "eulerLeverageOperator" if protocol == "euler" else "aaveV3LeverageOperator"
-    return _contract(get_address(key), abi=_load_abi("LeverageOperator"))
+    addr = get_address(key)
+    if not addr:
+        raise OperatorsNotSupportedError(active_chain())
+    return _contract(addr, abi=_load_abi("LeverageOperator"))
 
 
 def deleverage_operator(protocol: str = "euler"):
     """Get deleverage operator contract. Protocol: 'euler' or 'aave'."""
+    _check_operators_supported()
     key = "eulerDeleverageOperator" if protocol == "euler" else "aaveV3DeleverageOperator"
-    return _contract(get_address(key), abi=_load_abi("DeleverageOperator"))
+    addr = get_address(key)
+    if not addr:
+        raise OperatorsNotSupportedError(active_chain())
+    return _contract(addr, abi=_load_abi("DeleverageOperator"))
 
 
 def teleport_operator():
     """Get Aave teleport operator contract."""
-    return _contract(get_address("aaveV3TeleportOperator"), abi=_load_abi("TeleportOperator"))
+    _check_operators_supported()
+    addr = get_address("aaveV3TeleportOperator")
+    if not addr:
+        raise OperatorsNotSupportedError(active_chain())
+    return _contract(addr, abi=_load_abi("TeleportOperator"))
 
 
 def euler_wrapper():
     """Get Euler wrapper contract for credit vault deposits."""
+    if not active_chain().supports_euler:
+        raise EulerNotSupportedError(active_chain())
     return _contract(get_address("eulerWrapper"), abi=_load_abi("EulerWrapper"))
 
 
@@ -161,9 +192,46 @@ def aave_wrapper():
     return _contract(get_address("aaveV3Wrapper"), abi=_load_abi("AaveWrapper"))
 
 
-def aave_atoken_wrapper():
-    """Get Aave aToken wrapper contract."""
-    return _contract(get_address("aWSTETHWrapper"), abi=_load_abi("AaveATokenWrapper"))
+def aave_atoken_wrapper(iv_address: str | None = None):
+    """Get Aave aToken wrapper contract.
+
+    If iv_address is provided, resolves the wrapper via the per-chain
+    aaveIVToFactoryVault map (preferred). Falls back to a chain-default key for
+    callers that don't yet pass the IV — this preserves existing mainnet
+    behaviour while making MegaETH (which has a different wrapper symbol) work.
+    """
+    addrs = _load_addresses()
+    if iv_address:
+        mapping = addrs.get("aaveIVToFactoryVault", {})
+        addr = mapping.get(iv_address)
+        if not addr:
+            for iv, wrapper in mapping.items():
+                if iv.lower() == iv_address.lower():
+                    addr = wrapper
+                    break
+        if addr:
+            return _contract(addr, abi=_load_abi("AaveATokenWrapper"))
+
+    wrappers = addrs.get("aTokenWrappers", {})
+    if len(wrappers) == 1:
+        only = next(iter(wrappers.values()))
+        return _contract(only, abi=_load_abi("AaveATokenWrapper"))
+
+    for legacy_key in ("aWSTETHWrapper", "aWETHWrapper"):
+        addr = get_address(legacy_key)
+        if addr:
+            return _contract(addr, abi=_load_abi("AaveATokenWrapper"))
+
+    raise click_exception(
+        f"No aToken wrapper configured for chain {active_chain().chain_id}. "
+        "Pass iv_address or update addresses/<chain>.json."
+    )
+
+
+def click_exception(msg: str):
+    """Lazy click.ClickException constructor — avoids importing click in helpers."""
+    import click
+    return click.ClickException(msg)
 
 
 def resolve_euler_factory_vault(address: str) -> str | None:

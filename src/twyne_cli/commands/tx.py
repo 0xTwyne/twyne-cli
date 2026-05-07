@@ -3,6 +3,7 @@
 import click
 
 from ..batch import build_batch_items, collect_approval_requirements, parse_batch_file
+from ..chains import active_chain  # noqa: E402
 from ..completions import complete_iv_address, complete_target_vault, complete_vault_address
 from ..constants import DEFAULT_SLIPPAGE
 from ..context import TwyneContext, pass_ctx
@@ -44,6 +45,17 @@ from ..transactions import (
     simulate_through_evc,
     simulate_tx,
 )
+
+
+def _check_protocol_supported(protocol: str | None) -> None:
+    """Raise UsageError if --protocol euler is selected on a non-Euler chain."""
+    if protocol == "euler":
+        chain = active_chain()
+        if not chain.supports_euler:
+            raise click.UsageError(
+                f"Euler protocol is not available on {chain.name} (chain {chain.chain_id}). "
+                "This deployment is Aave-only — use --protocol aave."
+            )
 
 
 def _format_sim_address(value) -> str:
@@ -623,8 +635,9 @@ def credit():
               help="Which wrapper to use (euler or aave)")
 @tx_options
 @pass_ctx
-def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval):
+def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
     """Deposit underlying asset into an intermediate vault via wrapper."""
+    _check_protocol_supported(protocol)
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key)
@@ -679,8 +692,9 @@ def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alia
               help="Which wrapper to use (euler or aave)")
 @tx_options
 @pass_ctx
-def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval):
+def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
     """Deposit underlying asset into intermediate vault (alias for deposit)."""
+    _check_protocol_supported(protocol)
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key)
@@ -731,12 +745,12 @@ def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, a
 @click.argument("amount")
 @tx_options
 @pass_ctx
-def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval):
+def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
     """Deposit Aave aTokens into an intermediate vault via aToken wrapper."""
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key)
-        wrapper = aave_atoken_wrapper()
+        wrapper = aave_atoken_wrapper(iv_address)
 
         cv = credit_vault(iv_address)
         decimals = _get_token_decimals(cv)
@@ -869,7 +883,12 @@ def credit_redeem(ctx: TwyneContext, iv_address, shares, receiver, account_alias
 @tx.group()
 def operators():
     """Operator actions (leverage, deleverage, teleport) via 1inch swaps."""
-    pass
+    chain = active_chain()
+    if not chain.supports_operators:
+        raise click.UsageError(
+            f"Operator commands are not supported on {chain.name} (chain {chain.chain_id}). "
+            "Operators have not been deployed on this chain yet."
+        )
 
 
 @operators.command()
@@ -934,7 +953,7 @@ def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
         # receiver = eVault (collateral_addr) since underlying must land there for skim
         # vault_in = target vault (eUSDC) for deposit cleanup of unused input tokens
         quote = get_swap_quote(
-            chain_id=1,
+            chain_id=active_chain().chain_id,
             token_in=target_asset_addr,       # selling target asset (e.g. USDC)
             token_out=underlying_addr,         # buying underlying collateral (e.g. WETH)
             amount=raw_flashloan,
@@ -1072,7 +1091,7 @@ def deleverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
 
         # Get swap data from Euler Swap API
         quote = get_swap_quote(
-            chain_id=1,
+            chain_id=active_chain().chain_id,
             token_in=underlying_addr,
             token_out=target_asset_addr,
             amount=raw_amount,
@@ -1317,7 +1336,7 @@ def close_position(ctx: TwyneContext, vault_address, slippage, protocol,
         # 5. Get swap data from Euler Swap API
         op = deleverage_operator(protocol)
         quote = get_swap_quote(
-            chain_id=1,
+            chain_id=active_chain().chain_id,
             token_in=underlying_addr,
             token_out=target_asset_addr,
             amount=flashloan_amount,
@@ -1819,11 +1838,17 @@ def discover_positions(ctx: TwyneContext, wallet_address, protocol):
     """
     from ..formatting import output_table
 
+    _check_protocol_supported(protocol)
+    chain = active_chain()
+
     ctx.connect()
     try:
         if protocol == "euler":
             positions = discover_euler_positions(wallet_address)
         elif protocol == "aave":
+            positions = discover_aave_positions(wallet_address)
+        elif not chain.supports_euler:
+            # Non-Euler chains: default to Aave-only when --protocol is unspecified.
             positions = discover_aave_positions(wallet_address)
         else:
             positions = discover_all_positions(wallet_address)
@@ -1875,6 +1900,8 @@ def migrate_position(ctx: TwyneContext, wallet_address, protocol, ltv, position_
     First discovers migratable positions, then builds and executes the
     migration transaction (create vault + teleport).
     """
+    _check_protocol_supported(protocol)
+    chain = active_chain()
 
     ctx.connect()
     try:
@@ -1884,6 +1911,8 @@ def migrate_position(ctx: TwyneContext, wallet_address, protocol, ltv, position_
         if protocol == "euler":
             positions = discover_euler_positions(wallet_address)
         elif protocol == "aave":
+            positions = discover_aave_positions(wallet_address)
+        elif not chain.supports_euler:
             positions = discover_aave_positions(wallet_address)
         else:
             positions = discover_all_positions(wallet_address)

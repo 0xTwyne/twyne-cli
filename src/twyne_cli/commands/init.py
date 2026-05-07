@@ -6,6 +6,7 @@ import subprocess
 
 import click
 
+from ..chains import resolve_chain, supported_slugs
 from .config import CONFIG_FILE, load_config, save_config
 
 
@@ -16,25 +17,50 @@ def init(ctx):
     click.echo("Welcome to Twyne CLI setup!\n")
 
     cfg = load_config()
+    if "rpc_url" in cfg and "rpc_urls" not in cfg:
+        # Migrate legacy single-chain config in place.
+        cfg["rpc_urls"] = {"mainnet": cfg.pop("rpc_url")}
+        save_config(cfg)
 
-    # --- Step 1: RPC URL ---
-    click.echo("Step 1: RPC URL")
+    # --- Step 1: Default chain ---
+    click.echo("Step 1: Default chain")
     click.echo("-" * 30)
 
-    existing_rpc = cfg.get("rpc_url")
-    if existing_rpc:
-        click.echo(f"  Current RPC: {existing_rpc}")
-        if click.confirm("  Change RPC URL?", default=False):
-            _prompt_rpc(cfg)
+    existing_default = cfg.get("default_chain", "mainnet")
+    click.echo(f"  Current default chain: {existing_default}")
+    if click.confirm("  Change default chain?", default=False):
+        chain_slug = click.prompt(
+            "  Default chain",
+            type=click.Choice(supported_slugs(), case_sensitive=False),
+            default=existing_default,
+        )
+        cfg["default_chain"] = resolve_chain(chain_slug).slug
+        save_config(cfg)
+        click.echo(f"  Default chain set to '{cfg['default_chain']}'.\n")
     else:
-        click.echo("  No custom RPC configured (using Ape default: MEV Blocker RPC).")
-        if click.confirm("  Set a custom RPC URL?", default=False):
-            _prompt_rpc(cfg)
-        else:
-            click.echo("  Keeping default RPC.\n")
+        click.echo()
 
-    # --- Step 2: Ape accounts ---
-    click.echo("Step 2: Signing Account")
+    # --- Step 2: RPC URL per chain ---
+    click.echo("Step 2: RPC URLs")
+    click.echo("-" * 30)
+
+    rpc_urls = cfg.get("rpc_urls", {})
+    for slug in supported_slugs():
+        existing = rpc_urls.get(slug)
+        chain = resolve_chain(slug)
+        if existing:
+            click.echo(f"  [{slug}] Current: {existing}")
+            if click.confirm(f"  Change RPC for {slug}?", default=False):
+                _prompt_rpc_for_chain(cfg, slug, chain.default_rpc)
+        else:
+            default_hint = f" (default: {chain.default_rpc})" if chain.default_rpc else ""
+            click.echo(f"  [{slug}] No RPC configured{default_hint}.")
+            if click.confirm(f"  Configure RPC for {slug}?", default=False):
+                _prompt_rpc_for_chain(cfg, slug, chain.default_rpc)
+    click.echo()
+
+    # --- Step 3: Ape accounts ---
+    click.echo("Step 3: Signing Account")
     click.echo("-" * 30)
 
     try:
@@ -46,9 +72,9 @@ def init(ctx):
 
     if aliases:
         click.echo(f"  Found {len(aliases)} existing account(s): {', '.join(aliases)}")
-        existing_default = cfg.get("default_account")
-        if existing_default:
-            click.echo(f"  Default account: {existing_default}")
+        existing_default_acct = cfg.get("default_account")
+        if existing_default_acct:
+            click.echo(f"  Default account: {existing_default_acct}")
         choices = ["use-existing", "import", "generate", "skip"]
         choice = click.prompt(
             "  What would you like to do?",
@@ -82,8 +108,14 @@ def init(ctx):
     click.echo("Setup Complete!")
     click.echo("=" * 30)
 
-    rpc = cfg.get("rpc_url")
-    click.echo(f"  RPC URL:         {rpc or '(Ape default)'}")
+    click.echo(f"  Default chain:   {cfg.get('default_chain', 'mainnet')}")
+    rpc_urls = cfg.get("rpc_urls", {})
+    if rpc_urls:
+        click.echo("  RPC URLs:")
+        for slug, url in rpc_urls.items():
+            click.echo(f"    {slug:10s} {url}")
+    else:
+        click.echo("  RPC URLs:        (Ape defaults / env vars)")
     click.echo(f"  Default account: {cfg.get('default_account') or '(none)'}")
     click.echo(f"  Config file:     {CONFIG_FILE}")
     click.echo()
@@ -97,17 +129,20 @@ def init(ctx):
     click.echo("  twyne config --help        — manage settings")
 
 
-def _prompt_rpc(cfg: dict) -> None:
-    """Prompt for an RPC URL, validate, and save."""
-    url = click.prompt("  RPC URL", type=str)
+def _prompt_rpc_for_chain(cfg: dict, slug: str, default: str | None) -> None:
+    """Prompt for an RPC URL for a chain, validate, save."""
+    url = click.prompt("  RPC URL", type=str, default=default or "", show_default=bool(default))
+    if not url:
+        click.echo("  RPC not changed.\n")
+        return
     if not url.startswith(("http://", "https://")):
         click.echo("  Warning: URL should start with http:// or https://")
         if not click.confirm("  Save anyway?", default=False):
             click.echo("  RPC not changed.\n")
             return
-    cfg["rpc_url"] = url
+    cfg.setdefault("rpc_urls", {})[slug] = url
     save_config(cfg)
-    click.echo("  RPC URL saved.\n")
+    click.echo(f"  RPC URL for '{slug}' saved.\n")
 
 
 def _prompt_default_account(cfg: dict, aliases: list[str]) -> None:

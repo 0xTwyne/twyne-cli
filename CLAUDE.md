@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Twyne CLI is a Python command-line tool for querying and interacting with the Twyne credit delegation protocol on Ethereum mainnet. It supports read-only queries (vault health, protocol parameters, user portfolios) and write transactions (opening/closing positions, depositing, borrowing, leveraging, migrating positions) via direct RPC calls — no indexer or API dependency required.
+Twyne CLI is a Python command-line tool for querying and interacting with the Twyne credit delegation protocol. It supports read-only queries (vault health, protocol parameters, user portfolios) and write transactions (opening/closing positions, depositing, borrowing, leveraging, migrating positions) via direct RPC calls — no indexer or API dependency required.
+
+Multi-chain: `mainnet` (Ethereum, chain 1) and `megaeth` (chain 4326). MegaETH is an **Aave-V3-only** deployment with no leverage/deleverage/teleport operators; the `tx operators` group cleanly exits with `UsageError` on MegaETH while every other command works.
 
 - **Python 3.11+**, managed with **uv**
 - **Framework**: Ape (eth-ape) — provides Click CLI, multicall, contract interaction
@@ -37,12 +39,29 @@ Available on all commands:
 
 | Flag | Purpose |
 |------|---------|
-| `--rpc <url>` | Ethereum RPC URL (overrides env/config) |
+| `--chain <slug-or-id>` | Target chain (`mainnet`, `megaeth`, or chain id; default `mainnet`) |
+| `--rpc <url>` | RPC URL (overrides env/config for the active chain) |
 | `--json` | Force JSON output (auto-detects TTY) |
 | `--block <number>` | Query at specific historical block |
 | `--no-cache` | Bypass vault cache, force full rescan |
 | `--verbose, -v` | Show detailed revert reasons and call traces |
 | `--version` | Show version |
+
+## Chain Support
+
+| Slug | Chain ID | Operators? | Euler? | Address registry |
+|------|----------|-----------|--------|------------------|
+| `mainnet` | 1 | yes | yes | `src/twyne_cli/addresses/mainnet.json` |
+| `megaeth` | 4326 | **no** | no | `src/twyne_cli/addresses/megaeth.json` |
+
+The chain registry lives at `src/twyne_cli/chains.py`. Each `ChainSpec` carries capability flags (`supports_operators`, `supports_euler`) consulted at runtime; commands that depend on missing capabilities raise `OperatorsNotSupportedError` / `EulerNotSupportedError`, both subclasses of `ChainCapabilityError`. The `tx.operators` click group converts these into a clean `click.UsageError` (exit 2, no stack trace).
+
+Adding a new chain:
+
+1. Add a `ChainSpec` entry to `CHAINS` in `chains.py`.
+2. Drop a per-chain `addresses/<slug>.json` mirroring the existing shape.
+3. Register the network in `ape-config.yaml` under `networks.custom`.
+4. Add fork tests under `tests/integration/<slug>/` and unit tests in `tests/test_chains.py`.
 
 ## CLI Command Reference
 
@@ -79,7 +98,12 @@ Available on all commands:
 | `set-account` | `<alias>` | Save default signing account alias |
 | `get-account` | (none) | Show configured default account |
 
-RPC resolution order: `--rpc` flag > `$RPC_URL` env > saved config > Ape default (MEV Blocker).
+RPC resolution order:
+1. `--rpc` flag
+2. `RPC_URL_<chain_id>` env var (e.g., `RPC_URL_1`, `RPC_URL_4326`)
+3. Legacy `RPC_URL` env var (mainnet only, back-compat)
+4. Saved config (`~/.config/twyne/config.json` → `rpc_urls.<slug>`)
+5. Chain default (`ChainSpec.default_rpc`; mainnet falls through to Ape's MEV Blocker)
 
 ### `twyne init` — Interactive Setup
 
@@ -229,9 +253,10 @@ CLI (Click via Ape)
 
 | Variable | Purpose |
 |----------|---------|
-| `RPC_URL` | Ethereum mainnet RPC endpoint |
+| `RPC_URL_<chain_id>` | Per-chain RPC endpoint (e.g., `RPC_URL_1`, `RPC_URL_4326`) |
+| `RPC_URL` | Legacy mainnet RPC endpoint (back-compat; honoured only when active chain is mainnet) |
 | `PRIVATE_KEY` | Signing key for transactions |
-| `TWYNE_*` | Override specific addresses from registry |
+| `TWYNE_*` | Override specific addresses from the active chain's registry (dotted keys → `_`) |
 
 ## AI Assistant Rules
 
@@ -275,15 +300,86 @@ CLI (Click via Ape)
 | euler_ewstETH | `0x7613D202Af490c3d1cE1873b0a7022a34E89815f` | wstETH | Euler |
 | aave_awstETH | `0x75029a47f28550C93Ad5A3BbD2d9b5315204B561` | wstETH | Aave |
 
+## Intermediate Vaults (MegaETH, chain 4326)
+
+| Name | Address | Collateral | Protocol |
+|------|---------|------------|----------|
+| aave_aWETH | `0xcA883E66FC22792461E039d92350BeC04228f9F8` | WETH | Aave |
+
+## Key Contracts (MegaETH, chain 4326)
+
+| Contract | Address |
+|----------|---------|
+| VaultManager | `0x91BB674Fcc7CA44ecF97d8330738f8c806318017` |
+| CollateralVaultFactory | `0x65E83e6F11c28c2bAEe42c01Be57575d8dfF0037` |
+| EVC | `0xFF06F28cf0c44Cf1E8F03E6835bB2F3a2a752C5C` |
+| ProtocolConfig | `0x84101fdEC409E6446263c4738c3AE11166EAa392` |
+| GenericFactory | `0x577D42B0e234a64925Ed0C73486959C95D240405` |
+| OracleRouter | `0x6a93bAFC66D05E8f3c13060c752976D8b2a49972` |
+| Aave V3 Pool | `0x7e324AbC5De01d112AfC03a584966ff199741C28` |
+| Aave V3 Wrapper | `0x95FcAe04fCD438A82D3E7c2c9c17F5462771baB6` |
+| aWETH Wrapper | `0x8db3a8Be0584E97A8634dBEb0110dE55fe504141` |
+
+No operators (`*LeverageOperator`, `*DeleverageOperator`, `*TeleportOperator`) are deployed on MegaETH; the `tx operators` group is hard-gated and exits with `UsageError` if invoked.
+
 ## Testing
 
-Tests use `uv run pytest`. Two categories:
+Tests use `uv run pytest`. Three tiers:
 
-- `tests/` — Unit tests (mock-based, no RPC required). Fixtures in `tests/conftest.py`.
-- `tests/integration/` — Integration tests against a real RPC. Fixtures in `tests/integration/conftest.py` (session-scoped, real contracts).
+- `tests/` — Unit tests (mock-based, no RPC required). Includes `test_chains.py` (chain registry + flag parsing), `test_megaeth_addresses.py` (per-chain address loader), `test_megaeth_operators_unsupported.py` (capability gating). Fixtures in `tests/conftest.py`.
+- `tests/integration/` — Mainnet integration tests against a real Anvil fork (port 8454). Fixtures in `tests/integration/conftest.py`.
+- `tests/integration/megaeth/` — MegaETH integration tests. `test_smoke.py` is opt-in via `--live` and hits `https://mainnet.megaeth.com/rpc` read-only. Fork-mode tests (when added) use `anvil --fork-url https://mainnet.megaeth.com/rpc --chain-id 4326 --port 8455`.
+
+Custom flags:
+
+- `--live` — opt into read-only tests marked `@pytest.mark.live` (skipped by default).
 
 Test dependencies: install with `uv sync --extra test`.
 
 ## Gas Configuration
 
 Default: 1.5x gas limit multiplier (configured in `ape-config.yaml`). Override per-command with `--gas-multiplier`, `--priority-fee`, or `--gas-limit`.
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **twyne-cli** (1570 symbols, 2430 relationships, 65 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/twyne-cli/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/twyne-cli/clusters` | All functional areas |
+| `gitnexus://repo/twyne-cli/processes` | All execution flows |
+| `gitnexus://repo/twyne-cli/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->
