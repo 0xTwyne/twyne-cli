@@ -1305,10 +1305,10 @@ def close_position(ctx: TwyneContext, vault_address, slippage, protocol,
         # When liqLTV > extLiqLTV * buffer / MAXFACTOR, credit is reserved from the IV.
         # Lowering liqLTV to the minimum releases all credit, allowing full withdrawal.
         # Min liqLTV = ceil(extLiqLTV * buffer / MAXFACTOR)
-        # NOTE: The deployed VaultManager maps externalLiqBuffers and maxTwyneLTVs
-        # by collateral asset address (eVault share token), not by IV address.
+        # VaultManager maps externalLiqBuffers and maxTwyneLTVs by IV address (v1.0.5+).
         vm = vault_manager()
-        ext_liq_buffer = vm.externalLiqBuffers(asset_addr)
+        iv_addr = str(cv.intermediateVault())
+        ext_liq_buffer = vm.externalLiqBuffers(iv_addr)
         target_evault = credit_vault(target_vault_addr)
         ext_liq_ltv = target_evault.LTVLiquidation(asset_addr)
         from ..constants import MAXFACTOR
@@ -1416,35 +1416,14 @@ def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type
     if vault_type == 1 and not target_asset:
         raise click.UsageError("Aave vaults (--vault-type 1) require --target-asset <debt-token-address>.")
 
-    if vault_type == 1:
-        resolved = resolve_aave_factory_vault(intermediate_vault)
-        if resolved:
-            click.echo(
-                f"Note: Aave vaults require the aToken wrapper address for the factory.\n"
-                f"  Resolving {intermediate_vault[:10]}...{intermediate_vault[-4:]}"
-                f" → {resolved[:10]}...{resolved[-4:]}",
-                err=True,
-            )
-            intermediate_vault = resolved
-
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key)
 
-        # For Euler vaults, the factory expects the collateral asset (eVault share token),
-        # not the Twyne CreditEVault IV address. The VaultManager stores maxTwyneLTVs
-        # and externalLiqBuffers keyed by the collateral asset address.
-        if vault_type == 0:
-            resolved = resolve_euler_factory_vault(intermediate_vault)
-            if resolved:
-                click.echo(
-                    f"Note: Euler factory expects the collateral asset (eVault share token).\n"
-                    f"  Resolving {intermediate_vault[:10]}...{intermediate_vault[-4:]}"
-                    f" → {resolved[:10]}...{resolved[-4:]}",
-                    err=True,
-                )
-                intermediate_vault = resolved
-
+        # v1.0.5: factory.createCollateralVault takes the IV address directly as
+        # _intermediateVault (verified via vaultManager.isIntermediateVault). Pre-v1.0.5
+        # this slot held the eVault share token / aTokenWrapper, hence the resolve helpers
+        # in contracts.py — no longer needed in this path.
         fct = collateral_vault_factory()
         target_asset = target_asset or ZERO_ADDRESS
 
@@ -1584,38 +1563,12 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
     if vault_type == 1 and not target_asset:
         raise click.UsageError("Aave vaults (--vault-type 1) require --target-asset <debt-token-address>.")
 
-    # Auto-resolve Aave IV → aToken wrapper
-    if vault_type == 1:
-        resolved = resolve_aave_factory_vault(intermediate_vault)
-        if resolved:
-            click.echo(
-                f"Note: Aave vaults require the aToken wrapper address for the factory.\n"
-                f"  Resolving {intermediate_vault[:10]}...{intermediate_vault[-4:]}"
-                f" → {resolved[:10]}...{resolved[-4:]}",
-                err=True,
-            )
-            intermediate_vault = resolved
-
-    # Save original IV for token derivation (Euler double-hop needs the CreditEVault)
+    # v1.0.5: the IV passed by the user is exactly what the factory expects.
     original_iv = intermediate_vault
 
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key)
-
-        # For Euler vaults, the factory expects the collateral asset (eVault share token),
-        # not the Twyne CreditEVault IV address. The VaultManager stores maxTwyneLTVs
-        # and externalLiqBuffers keyed by the collateral asset address.
-        if vault_type == 0:
-            resolved = resolve_euler_factory_vault(intermediate_vault)
-            if resolved:
-                click.echo(
-                    f"Note: Euler factory expects the collateral asset (eVault share token).\n"
-                    f"  Resolving {intermediate_vault[:10]}...{intermediate_vault[-4:]}"
-                    f" → {resolved[:10]}...{resolved[-4:]}",
-                    err=True,
-                )
-                intermediate_vault = resolved
 
         fct = collateral_vault_factory()
         target_asset_addr = target_asset or ZERO_ADDRESS

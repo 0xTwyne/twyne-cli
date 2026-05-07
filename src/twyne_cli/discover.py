@@ -10,7 +10,6 @@ from .contracts import (
     euler_evc,
     get_address,
     intermediate_vaults,
-    resolve_aave_factory_vault,
     vault_manager,
 )
 
@@ -173,10 +172,10 @@ def discover_euler_positions(user_address: str) -> list[DiscoveredPosition]:
             liq_ltv_bps = 0
 
         # Get max Twyne liq LTV from VaultManager
-        # VaultManager keys maxTwyneLTVs by collateral asset (eVault share token), not IV
+        # v1.0.5+: VaultManager keys maxTwyneLTVs by IV address
         try:
             vm = vault_manager()
-            max_twyne_ltv_bps = vm.maxTwyneLTVs(collateral_evault_addr)
+            max_twyne_ltv_bps = vm.maxTwyneLTVs(iv_addr)
         except Exception:
             max_twyne_ltv_bps = 0
 
@@ -276,11 +275,10 @@ def discover_aave_positions(user_address: str) -> list[DiscoveredPosition]:
                 continue
 
             # Get max Twyne liq LTV from VaultManager
-            # VaultManager keys maxTwyneLTVs by collateral asset (aToken wrapper), not IV
+            # v1.0.5+: VaultManager keys maxTwyneLTVs by IV address
             try:
                 vm = vault_manager()
-                wrapper_addr = resolve_aave_factory_vault(iv_addr)
-                max_twyne_ltv_bps = vm.maxTwyneLTVs(wrapper_addr) if wrapper_addr else 0
+                max_twyne_ltv_bps = vm.maxTwyneLTVs(iv_addr)
             except Exception:
                 max_twyne_ltv_bps = 0
 

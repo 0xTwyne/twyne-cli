@@ -74,16 +74,16 @@ class TestFactoryCreateVault:
         matching the CLI's execute_through_evc() pattern.
         """
         factory = collateral_vault_factory()
-        args = [0, EULER_EWETH, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, EULER_EWETH_IV]
+        args = [0, EULER_EWETH_IV, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, ZERO_ADDRESS]
         receipt = execute_through_evc(factory, "createCollateralVault", args, test_account)
         assert receipt.status == 1
 
     def test_cli_factory_simulation_succeeds(self, test_account, ape_provider):
-        """simulate_tx with v2 ABI succeeds (eth_call bypasses callThroughEVC)."""
+        """simulate_tx with v1.0.5 ABI succeeds (eth_call bypasses callThroughEVC)."""
         factory = collateral_vault_factory()
         sim = simulate_tx(
             factory, "createCollateralVault",
-            [0, EULER_EWETH, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, EULER_EWETH_IV],
+            [0, EULER_EWETH_IV, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, ZERO_ADDRESS],
             sender=test_account,
         )
         assert sim["success"] is True

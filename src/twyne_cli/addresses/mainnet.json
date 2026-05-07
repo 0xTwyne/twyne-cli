@@ -7,7 +7,6 @@
   "collateralVaultFactory": "0xa1517cCe0bE75700A8838EA1cEE0dc383cd3A332",
   "GenericFactory": "0xB5Eb1d005e389Bef38161691E2083b4d86FF647a",
   "oracleRouter": "0xb001f039D76bA48E577A17c04b6940DB37aF8648",
-  "healthStatViewer": "0x0dd9065c998E75657BcE6C3a11d7F5AbA5CBdbD4",
   "eulerWrapper": "0xa680FeDa11FbbB18a759A60756b2E7B51A5f452F",
   "eulerLeverageOperator": "0x335AB81f1C3d9f72639004d3e982902458CF29b3",
   "eulerDeleverageOperator": "0x36b2Bd4E17827E9dEABdB3AD520AC597972196D4",

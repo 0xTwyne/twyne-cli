@@ -74,7 +74,7 @@ class TestCreateVault:
         sim = simulate_tx(
             factory,
             "createCollateralVault",
-            [0, EULER_EWETH, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, EULER_EWETH_IV],
+            [0, EULER_EWETH_IV, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, ZERO_ADDRESS],
             sender=test_account,
         )
         assert sim["success"] is True

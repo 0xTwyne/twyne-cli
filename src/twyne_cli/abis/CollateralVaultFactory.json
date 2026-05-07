@@ -233,15 +233,22 @@
     {
         "type": "function",
         "name": "pause",
-        "inputs": [
-            {
-                "name": "p",
-                "type": "bool",
-                "internalType": "bool"
-            }
-        ],
+        "inputs": [],
         "outputs": [],
         "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "pauseGuardian",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "view"
     },
     {
         "type": "function",
@@ -272,6 +279,26 @@
     {
         "type": "function",
         "name": "renounceOwnership",
+        "inputs": [],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "setPauseGuardian",
+        "inputs": [
+            {
+                "name": "_pauseGuardian",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "unpause",
         "inputs": [],
         "outputs": [],
         "stateMutability": "nonpayable"
@@ -784,7 +811,7 @@
         "name": "T_SetExternalLiqBuffer",
         "inputs": [
             {
-                "name": "collateralAddress",
+                "name": "intermediateVault",
                 "type": "address",
                 "indexed": true,
                 "internalType": "address"
@@ -794,6 +821,12 @@
                 "type": "uint16",
                 "indexed": false,
                 "internalType": "uint16"
+            },
+            {
+                "name": "rampDuration",
+                "type": "uint32",
+                "indexed": false,
+                "internalType": "uint32"
             }
         ],
         "anonymous": false
@@ -807,6 +840,12 @@
                 "type": "address",
                 "indexed": true,
                 "internalType": "address"
+            },
+            {
+                "name": "allowed",
+                "type": "bool",
+                "indexed": false,
+                "internalType": "bool"
             }
         ],
         "anonymous": false
@@ -853,7 +892,7 @@
         "name": "T_SetMaxLiqLTV",
         "inputs": [
             {
-                "name": "collateralAddress",
+                "name": "intermediateVault",
                 "type": "address",
                 "indexed": true,
                 "internalType": "address"
@@ -863,6 +902,25 @@
                 "type": "uint16",
                 "indexed": false,
                 "internalType": "uint16"
+            },
+            {
+                "name": "rampDuration",
+                "type": "uint32",
+                "indexed": false,
+                "internalType": "uint32"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "event",
+        "name": "T_SetPauseGuardian",
+        "inputs": [
+            {
+                "name": "pauseGuardian",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
             }
         ],
         "anonymous": false
@@ -1051,6 +1109,11 @@
     {
         "type": "error",
         "name": "CallerNotCollateralVault",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "CallerNotOwnerOrPauseGuardian",
         "inputs": []
     },
     {

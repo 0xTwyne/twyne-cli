@@ -11,18 +11,15 @@ from ..contracts import (
     aave_v3_pool,
     collateral_vault,
     euler_oracle,
-    health_stat_viewer,
 )
 from ..formatting import (
     format_address,
     format_bps,
-    format_hf,
     format_usd,
     is_tty,
     output_json,
     output_kv,
     output_table,
-    risk_level,
 )
 
 
@@ -50,38 +47,13 @@ def vault():
 @pass_ctx
 def health(ctx: TwyneContext, address: str):
     """Show health factors for a collateral vault."""
-    ctx.connect()
-    try:
-        block = ctx.resolve_block()
-        hsv = health_stat_viewer()
-
-        ext_hf, in_hf, ext_debt, int_debt = hsv.health(address, block_identifier=block)
-
-        if ctx.force_json or not is_tty():
-            output_json({
-                "vault": address,
-                "external_hf": str(ext_hf),
-                "internal_hf": str(in_hf),
-                "external_hf_display": format_hf(ext_hf),
-                "internal_hf_display": format_hf(in_hf),
-                "external_debt_value": str(ext_debt),
-                "internal_debt_value": str(int_debt),
-                "external_debt_usd": ext_debt / WAD,
-                "internal_debt_usd": int_debt / WAD,
-                "risk_level": risk_level(min(ext_hf, in_hf)),
-            })
-        else:
-            min_hf = min(ext_hf, in_hf)
-            output_kv([
-                ("Vault", address),
-                ("External HF", f"{format_hf(ext_hf)}  (protocol liquidation proximity)"),
-                ("Internal HF", f"{format_hf(in_hf)}  (Twyne liquidation proximity)"),
-                ("External Debt", format_usd(ext_debt / WAD)),
-                ("Internal Debt", format_usd(int_debt / WAD)),
-                ("Risk Level", risk_level(min_hf)),
-            ], title="Vault Health")
-    finally:
-        ctx.disconnect()
+    click.echo(
+        "Error: HealthStatViewer contract removed in v1.0.5. "
+        "Health queries temporarily unavailable. "
+        "Use 'twyne vault info' for basic vault state.",
+        err=True,
+    )
+    raise SystemExit(1)
 
 
 @vault.command()
@@ -154,10 +126,6 @@ def info(ctx: TwyneContext, address: str):
             user_coll_usd = results2[2] / WAD
             debt_usd = results2[3] / WAD
 
-        # Health factors
-        hsv = health_stat_viewer()
-        ext_hf, in_hf, _, _ = hsv.health(address, block_identifier=block)
-
         # Operating LTV = debt / user_collateral (in USD terms)
         operating_ltv = (debt_usd / user_coll_usd * 100) if user_coll_usd > 0 else 0.0
 
@@ -181,11 +149,9 @@ def info(ctx: TwyneContext, address: str):
                 "twyne_liq_ltv_bps": twyne_liq_ltv,
                 "twyne_liq_ltv_pct": twyne_liq_ltv / 100,
                 "operating_ltv_pct": operating_ltv,
-                "external_hf": str(ext_hf),
-                "internal_hf": str(in_hf),
                 "can_liquidate": can_liquidate,
                 "can_rebalance": can_rebalance,
-                "risk_level": risk_level(min(ext_hf, in_hf)),
+                "note": "Health factors unavailable — HealthStatViewer removed in v1.0.5",
             })
         else:
             output_kv([
@@ -202,9 +168,8 @@ def info(ctx: TwyneContext, address: str):
                 ("", ""),
                 ("Liquidation LTV", format_bps(twyne_liq_ltv)),
                 ("Operating LTV", f"{operating_ltv:.2f}%"),
-                ("External HF", format_hf(ext_hf)),
-                ("Internal HF", format_hf(in_hf)),
-                ("Risk Level", risk_level(min(ext_hf, in_hf))),
+                ("External HF", "N/A (HealthStatViewer removed)"),
+                ("Internal HF", "N/A (HealthStatViewer removed)"),
                 ("", ""),
                 ("Can Liquidate", str(can_liquidate)),
                 ("Can Rebalance", str(can_rebalance)),

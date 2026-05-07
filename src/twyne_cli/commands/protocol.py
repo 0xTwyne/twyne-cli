@@ -10,7 +10,6 @@ from ..contracts import (
     aave_v3_pool,
     credit_vault,
     intermediate_vaults,
-    resolve_aave_factory_vault,
     vault_manager,
 )
 from ..formatting import (
@@ -47,14 +46,16 @@ def overview(ctx: TwyneContext):
         vm = vault_manager()
         iv_map = intermediate_vaults()
 
-        # Build reverse map: collateral asset address → IV name.
+        # Build maps: asset → IV name, asset → IV address.
         # Each IV's asset() returns its collateral token (e.g. eWETH).
         asset_to_iv: dict[str, str] = {}
+        asset_to_iv_addr: dict[str, str] = {}
         for iv_name, iv_addr in iv_map.items():
             try:
                 iv_contract = credit_vault(iv_addr)
                 asset_addr = str(iv_contract.asset(block_identifier=block)).lower()
                 asset_to_iv[asset_addr] = iv_name
+                asset_to_iv_addr[asset_addr] = iv_addr
             except Exception:
                 pass
 
@@ -67,11 +68,20 @@ def overview(ctx: TwyneContext):
             asset_addr = asset_addr_lower
 
             # Query VaultManager params live (governance-controlled, not cached).
-            # Despite ABI param name, these mappings are keyed by collateral asset.
+            # v1.0.5+: mappings are keyed by intermediate vault address.
             try:
-                max_ltv = vm.maxTwyneLTVs(asset_addr, block_identifier=block)
-                ext_buffer = vm.externalLiqBuffers(asset_addr, block_identifier=block)
+                iv_addr = asset_to_iv_addr.get(asset_addr_lower)
                 iv_name = asset_to_iv.get(asset_addr_lower, "unknown")
+                if not iv_addr:
+                    asset_data.append({
+                        "collateral_asset": asset_addr,
+                        "intermediate_vault": iv_name,
+                        "error": "No IV mapping found",
+                    })
+                    continue
+
+                max_ltv = vm.maxTwyneLTVs(iv_addr, block_identifier=block)
+                ext_buffer = vm.externalLiqBuffers(iv_addr, block_identifier=block)
 
                 asset_data.append({
                     "collateral_asset": asset_addr,
@@ -123,47 +133,61 @@ def rates(ctx: TwyneContext, asset_or_iv_address: str):
         block = ctx.resolve_block()
         vm = vault_manager()
 
-        # Try as collateral asset first — if maxTwyneLTVs returns non-zero, it's an asset
-        max_ltv = vm.maxTwyneLTVs(asset_or_iv_address, block_identifier=block)
+        # v1.0.5+: maxTwyneLTVs and externalLiqBuffers are keyed by IV address.
+        # First check if the input is an IV address directly.
+        is_iv = False
+        try:
+            is_iv = vm.isIntermediateVault(asset_or_iv_address, block_identifier=block)
+        except Exception:
+            pass
 
-        if max_ltv > 0:
-            # It's a collateral asset address
-            ext_buffer = vm.externalLiqBuffers(asset_or_iv_address, block_identifier=block)
-            iv_addr = vm.getIntermediateVault(asset_or_iv_address, block_identifier=block)
+        if is_iv:
+            iv_addr = asset_or_iv_address
+        else:
+            # Input might be a collateral asset — resolve to IV address
+            iv_addr = None
+            iv_map = intermediate_vaults()
+            for _iv_name, _iv_addr in iv_map.items():
+                try:
+                    iv_contract = credit_vault(_iv_addr)
+                    asset = str(iv_contract.asset(block_identifier=block))
+                    if asset.lower() == asset_or_iv_address.lower():
+                        iv_addr = _iv_addr
+                        break
+                except Exception:
+                    continue
+
+        if iv_addr:
+            max_ltv = vm.maxTwyneLTVs(iv_addr, block_identifier=block)
+            ext_buffer = vm.externalLiqBuffers(iv_addr, block_identifier=block)
 
             rate_data = {
-                "collateral_asset": asset_or_iv_address,
                 "intermediate_vault": iv_addr,
                 "max_twyne_ltv_bps": max_ltv,
                 "max_twyne_ltv_pct": max_ltv / MAXFACTOR * 100,
                 "external_liq_buffer_bps": ext_buffer,
                 "external_liq_buffer_pct": ext_buffer / MAXFACTOR * 100,
             }
+            if not is_iv:
+                rate_data["collateral_asset"] = asset_or_iv_address
 
-            # Try to get target vault count for the IV
+            # Get target vault count for the IV
             try:
                 tv_len = vm.targetVaultLength(iv_addr, block_identifier=block)
                 rate_data["target_vault_count"] = tv_len
-            except Exception:
-                pass
-
-        else:
-            # Might be an IV address — query target vault info
-            rate_data = {
-                "address": asset_or_iv_address,
-                "note": "Not a registered collateral asset. If this is an IV, use 'protocol overview' to see all assets.",
-            }
-
-            try:
-                tv_len = vm.targetVaultLength(asset_or_iv_address, block_identifier=block)
-                rate_data["target_vault_count"] = tv_len
                 targets = []
                 for i in range(tv_len):
-                    tv = vm.allowedTargetVaultList(asset_or_iv_address, i, block_identifier=block)
+                    tv = vm.allowedTargetVaultList(iv_addr, i, block_identifier=block)
                     targets.append(tv)
                 rate_data["allowed_target_vaults"] = targets
             except Exception:
                 pass
+
+        else:
+            rate_data = {
+                "address": asset_or_iv_address,
+                "note": "Not a registered intermediate vault or collateral asset. Use 'protocol overview' to see all assets.",
+            }
 
         if ctx.force_json or not is_tty():
             output_json(rate_data)
@@ -255,8 +279,9 @@ def _fetch_euler_pairs(iv_name: str, iv_addr: str, vm, block) -> list[dict]:
     collateral = str(iv.asset(block_identifier=block))
 
     tv_count = vm.targetVaultLength(iv_addr, block_identifier=block)
-    max_twyne = vm.maxTwyneLTVs(collateral, block_identifier=block)
-    beta_safe = vm.externalLiqBuffers(collateral, block_identifier=block)
+    # v1.0.5+: keyed by IV address, not collateral asset
+    max_twyne = vm.maxTwyneLTVs(iv_addr, block_identifier=block)
+    beta_safe = vm.externalLiqBuffers(iv_addr, block_identifier=block)
 
     pairs: list[dict] = []
     for i in range(tv_count):
@@ -303,12 +328,9 @@ def _fetch_aave_pairs(iv_name: str, iv_addr: str, vm, pool, block) -> list[dict]
     borr_ltv = emode_data[0]   # ltv = borrow LTV in bps
     liq_ltv = emode_data[1]    # liquidationThreshold = liquidation LTV in bps
 
-    wrapper = resolve_aave_factory_vault(iv_addr)
-    if wrapper is None:
-        return [{"iv_name": iv_name, "error": f"No factory vault mapping for {iv_addr}"}]
-
-    max_twyne = vm.maxTwyneLTVs(wrapper, block_identifier=block)
-    beta_safe = vm.externalLiqBuffers(wrapper, block_identifier=block)
+    # v1.0.5+: keyed by IV address, not wrapper/collateral asset
+    max_twyne = vm.maxTwyneLTVs(iv_addr, block_identifier=block)
+    beta_safe = vm.externalLiqBuffers(iv_addr, block_identifier=block)
 
     return [{
         "iv_name": iv_name,

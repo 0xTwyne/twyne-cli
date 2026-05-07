@@ -238,8 +238,13 @@ class TestAaveIVResolution:
     @patch("twyne_cli.commands.tx.simulate_through_evc")
     @patch("twyne_cli.commands.tx.resolve_account")
     @patch("twyne_cli.commands.tx.collateral_vault_factory")
-    def test_aave_iv_resolved_to_wrapper(self, mock_factory, mock_resolve, mock_sim):
-        """Passing the Aave IV address auto-resolves to the wrapper and prints a note."""
+    def test_aave_iv_passes_through_to_factory(self, mock_factory, mock_resolve, mock_sim):
+        """v1.0.5: the Aave IV address is forwarded as-is (no aTokenWrapper rewrite).
+
+        Pre-v1.0.5 the CLI rewrote the IV to the aTokenWrapper before calling the
+        factory. v1.0.5's factory expects the IV directly and validates it via
+        VaultManager.isIntermediateVault, so the rewrite was removed.
+        """
         from twyne_cli.cli import cli
 
         mock_resolve.return_value = MagicMock(address="0xSENDER")
@@ -258,12 +263,10 @@ class TestAaveIVResolution:
                 "--private-key", "deadbeef" * 8,
             ])
         assert result.exit_code == 0
-        # The note should appear on stderr
-        assert "aToken wrapper" in result.stderr
-        assert AAVE_WRAPPER[-4:] in result.stderr
-        # The resolved address should be passed to simulate_through_evc
-        call_args = mock_sim.call_args[0][2]  # args list
-        assert call_args[1] == AAVE_WRAPPER
+        assert "aToken wrapper" not in result.stderr  # rewrite path removed
+        # IV passes through unchanged
+        call_args = mock_sim.call_args[0][2]
+        assert call_args[1] == AAVE_IV
 
     @patch("twyne_cli.commands.tx.simulate_through_evc")
     @patch("twyne_cli.commands.tx.resolve_account")
@@ -294,12 +297,15 @@ class TestAaveIVResolution:
         call_args = mock_sim.call_args[0][2]
         assert call_args[1] == AAVE_WRAPPER
 
-    @patch("twyne_cli.commands.tx.resolve_euler_factory_vault", return_value=FAKE_EVAULT_SHARE)
     @patch("twyne_cli.commands.tx.simulate_through_evc")
     @patch("twyne_cli.commands.tx.resolve_account")
     @patch("twyne_cli.commands.tx.collateral_vault_factory")
-    def test_euler_vault_resolved_to_collateral_asset(self, mock_factory, mock_resolve, mock_sim, mock_euler_resolve):
-        """Euler vault type (0) resolves IV to collateral asset (eVault share token)."""
+    def test_euler_iv_passes_through_to_factory(self, mock_factory, mock_resolve, mock_sim):
+        """v1.0.5: Euler IV is forwarded as-is (no eVault-share-token rewrite).
+
+        Pre-v1.0.5 the CLI rewrote the IV to the underlying eVault share token
+        before calling the factory. v1.0.5's factory expects the IV directly.
+        """
         from twyne_cli.cli import cli
 
         mock_resolve.return_value = MagicMock(address="0xSENDER")
@@ -317,12 +323,10 @@ class TestAaveIVResolution:
                 "--private-key", "deadbeef" * 8,
             ])
         assert result.exit_code == 0
-        # Resolution note should appear on stderr
-        assert "collateral asset" in result.stderr
-        assert FAKE_EVAULT_SHARE[-4:] in result.stderr
-        # Resolved address should be passed to simulate_through_evc
+        assert "collateral asset" not in result.stderr  # rewrite path removed
+        # IV passes through unchanged
         call_args = mock_sim.call_args[0][2]
-        assert call_args[1] == FAKE_EVAULT_SHARE
+        assert call_args[1] == FAKE_IV
 
     @patch("twyne_cli.commands.tx.resolve_euler_factory_vault", return_value=None)
     @patch("twyne_cli.commands.tx.simulate_through_evc")
@@ -444,11 +448,10 @@ class TestOpenPosition:
         assert "wstETH" in result.output
         assert "USDC" in result.output
         assert "Dry run" in result.output
-        # Euler IV resolution note on stderr
-        assert "collateral asset" in result.stderr
-        # Resolved address used in factory args
+        # v1.0.5: no rewrite — IV passes through to the factory unchanged.
+        assert "collateral asset" not in result.stderr
         call_args = mock_sim_evc.call_args[0][2]
-        assert call_args[1] == FAKE_EVAULT_SHARE
+        assert call_args[1] == FAKE_IV
 
     @patch("twyne_cli.commands.tx.erc20", side_effect=_mock_erc20)
     @patch("twyne_cli.commands.tx.credit_vault")
@@ -487,7 +490,8 @@ class TestOpenPosition:
                 "--private-key", "deadbeef" * 8,
             ])
         assert result.exit_code == 0, result.output
-        assert "aToken wrapper" in result.stderr
+        # v1.0.5: no aToken-wrapper rewrite for Aave IV.
+        assert "aToken wrapper" not in result.stderr
         assert "Dry run" in result.output
 
     @patch("twyne_cli.commands.tx.resolve_euler_factory_vault", return_value=FAKE_EVAULT_SHARE)
