@@ -2,10 +2,10 @@
 
 import click
 
-from ..completions import complete_vault_address
-from ..context import TwyneContext, pass_ctx
-from ..constants import MAXFACTOR, USD_ADDRESS, WAD
 from ..cache import get_vault_cache
+from ..completions import complete_vault_address
+from ..constants import USD_ADDRESS, WAD
+from ..context import TwyneContext, pass_ctx
 from ..contracts import (
     aave_oracle,
     aave_v3_pool,

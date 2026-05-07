@@ -1,0 +1,34 @@
+{
+  "chainId": 4326,
+  "deployer": "0x05c859bF9424e7c40FED32a2b16DDb8433B44FBf",
+  "evc": "0xFF06F28cf0c44Cf1E8F03E6835bB2F3a2a752C5C",
+  "vaultManager": "0x91BB674Fcc7CA44ecF97d8330738f8c806318017",
+  "collateralVaultFactory": "0x65E83e6F11c28c2bAEe42c01Be57575d8dfF0037",
+  "GenericFactory": "0x577D42B0e234a64925Ed0C73486959C95D240405",
+  "protocolConfig": "0x84101fdEC409E6446263c4738c3AE11166EAa392",
+  "oracleRouter": "0x6a93bAFC66D05E8f3c13060c752976D8b2a49972",
+  "aaveOracleRouter": "0x6a93bAFC66D05E8f3c13060c752976D8b2a49972",
+  "aaveCollateralVaultImplementation": "0xEbe48f70990942d11098d3C15e53D777F68b3ED1",
+  "aavePool": "0x7e324AbC5De01d112AfC03a584966ff199741C28",
+  "aaveV3Wrapper": "0x95FcAe04fCD438A82D3E7c2c9c17F5462771baB6",
+  "aTokenWrapperOracle": "0x04Bd0f950E6eA6656243fC115df3006cdFD850c8",
+  "bridgeHookTarget": "0x80aa95695e9aC1c3F1fCc363f522Caf2a9Aa7c1B",
+  "deployerExampleCollateralVault": "0xb984C03f17aae7eA7a44Be477b3726c3f8346000",
+  "upgrBeacon": "0x16f8ED4e6c10e9089DcE1680c1e4Ca4230c943de",
+  "intermediateVaults": {
+    "aave_aWETH": "0xcA883E66FC22792461E039d92350BeC04228f9F8"
+  },
+  "targetVaults": {
+    "aave_pool": "0x7e324AbC5De01d112AfC03a584966ff199741C28"
+  },
+  "operators": {},
+  "aTokenWrappers": {
+    "aWETH": "0x8db3a8Be0584E97A8634dBEb0110dE55fe504141"
+  },
+  "aaveIVToFactoryVault": {
+    "0xcA883E66FC22792461E039d92350BeC04228f9F8": "0x8db3a8Be0584E97A8634dBEb0110dE55fe504141"
+  },
+  "aWETHWrapper": "0x8db3a8Be0584E97A8634dBEb0110dE55fe504141",
+  "collateralAsset": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+  "targetAsset": "0xFAfDdbb3FC7688494971a79cc65DCa3EF82079E7"
+}

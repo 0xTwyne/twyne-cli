@@ -1,7 +1,9 @@
 """Incremental event cache for vault discovery.
 
 Caches immutable data (vault addresses, creation blocks, asset addresses) from
-T_CollateralVaultCreated factory events. Only scans new blocks since last checkpoint.
+T_CollateralVaultCreated factory events. Only scans new blocks since last
+checkpoint. Cache files are keyed by chain id so multi-chain usage doesn't
+cross-pollute.
 """
 
 import json
@@ -11,12 +13,10 @@ from pathlib import Path
 
 import click
 
+from .chains import active_chain
 from .contracts import _load_abi, get_address
 
 CACHE_DIR = Path.home() / ".config" / "twyne" / "cache"
-
-# First block with Twyne-related events on mainnet — no factory events exist before this.
-MAINNET_START_BLOCK = 23_233_276
 
 
 class VaultEntry:
@@ -44,12 +44,14 @@ class VaultCache:
     Scans only from last_scanned_block + 1 on subsequent calls.
     """
 
-    def __init__(self, chain_id: int = 1):
-        self.chain_id = chain_id
+    def __init__(self, chain_id: int | None = None, start_block: int | None = None):
+        chain = active_chain()
+        self.chain_id = chain_id if chain_id is not None else chain.chain_id
+        self.start_block = start_block if start_block is not None else chain.start_block
         self.factory_addr = get_address("collateralVaultFactory")
         self.last_scanned_block = 0
         self.vaults: list[VaultEntry] = []
-        self._cache_file = CACHE_DIR / f"chain{chain_id}_vaults.json"
+        self._cache_file = CACHE_DIR / f"chain{self.chain_id}_vaults.json"
 
     def load(self) -> "VaultCache":
         """Load cache from disk. Discards if chain_id or factory don't match."""
@@ -102,7 +104,7 @@ class VaultCache:
         from ape import Contract, chain
 
         current_block = to_block if to_block is not None else chain.blocks.height
-        from_block = self.last_scanned_block + 1 if self.last_scanned_block > 0 else MAINNET_START_BLOCK
+        from_block = self.last_scanned_block + 1 if self.last_scanned_block > 0 else self.start_block
 
         if from_block > current_block:
             return 0
@@ -113,7 +115,7 @@ class VaultCache:
         # Existing addresses for dedup
         existing = {v.address.lower() for v in self.vaults}
 
-        if from_block == MAINNET_START_BLOCK:
+        if from_block == self.start_block:
             click.echo("Building vault cache (first run — scanning from factory deployment)...", err=True)
         else:
             gap = current_block - from_block + 1
@@ -167,11 +169,11 @@ class VaultCache:
 
 
 def get_vault_cache(ctx_obj) -> VaultCache:
-    """Convenience: load (or rebuild) the vault cache based on CLI context.
+    """Convenience: load (or rebuild) the vault cache for the active chain.
 
-    Handles --no-cache flag and --block flag.
+    Handles --no-cache and --block flags.
     """
-    cache = VaultCache(chain_id=1)
+    cache = VaultCache()
 
     if not ctx_obj.no_cache:
         cache.load()

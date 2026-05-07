@@ -17,38 +17,68 @@ uv tool install --reinstall .
 ## Quick Start
 
 ```bash
-twyne init                           # guided setup: RPC, account, completions
-twyne protocol overview              # see all supported collateral/debt pairs
-twyne vault list                     # list all collateral vaults
-twyne vault health <vault-address>   # check a vault's health
+twyne init                                   # guided setup: chain, RPC, account
+twyne protocol overview                      # Ethereum mainnet (default)
+twyne --chain megaeth protocol overview      # MegaETH (chain 4326)
+twyne vault list                             # list collateral vaults
+twyne vault health <vault-address>           # check a vault's health
 ```
+
+## Supported Chains
+
+| Slug | Chain ID | Operators? | Euler? | Default RPC |
+|------|----------|-----------|--------|-------------|
+| `mainnet` | 1 | yes | yes | Ape default (MEV Blocker) |
+| `megaeth` | 4326 | **no** | no | `https://mainnet.megaeth.com/rpc` |
+
+MegaETH is currently an **Aave-V3-only** Twyne deployment with no leverage/deleverage/teleport operators. The `tx operators ...` group exits cleanly with `UsageError` on MegaETH; the rest of the CLI (read queries, collateral vault ops, credit vault ops, factory, batch, discover/migrate against Aave) works normally.
+
+Select a chain with `--chain`:
+
+```bash
+twyne --chain megaeth vault list                    # by slug
+twyne --chain 4326 vault list                       # by chain id
+twyne --chain mainnet protocol overview             # explicit mainnet
+```
+
+Default chain is `mainnet`; override with `twyne config set-default-chain megaeth`.
 
 ## RPC Configuration
 
-The CLI works out of the box with no configuration — it uses Ape's built-in default RPC.
+The CLI works out of the box for mainnet via Ape's default provider. MegaETH falls back to its public RPC if nothing is configured.
 
-To use your own RPC endpoint (recommended for heavy usage), pick one of these options:
+Per-chain RPC resolution order:
+
+1. `--rpc <url>` flag
+2. `RPC_URL_<chain_id>` env var (e.g., `RPC_URL_1`, `RPC_URL_4326`)
+3. Legacy `RPC_URL` env var (only honoured for mainnet, back-compat)
+4. Saved config (`~/.config/twyne/config.json`)
+5. Chain default (`https://mainnet.megaeth.com/rpc` for MegaETH; Ape default for mainnet)
+
+Set RPCs:
 
 ```bash
-# Option 1: Save it permanently
-twyne config set-rpc https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+# Per-chain via config
+twyne config set-rpc --chain mainnet https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+twyne config set-rpc --chain megaeth https://your-megaeth-endpoint
 
-# Option 2: Set via environment variable
-export RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+# Per-chain via env var
+export RPC_URL_1=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+export RPC_URL_4326=https://mainnet.megaeth.com/rpc
 
-# Option 3: Pass per-command
-twyne --rpc https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY vault list
+# Per-command
+twyne --chain megaeth --rpc https://mainnet.megaeth.com/rpc vault list
 ```
 
-Resolution order: `--rpc` flag > `$RPC_URL` env var > saved config > Ape default.
-
-Manage your saved config:
+Manage saved config:
 
 ```bash
-twyne config get-rpc            # show current RPC
-twyne config clear-rpc          # remove saved RPC, revert to default
-twyne config set-account <alias> # save default signing account
-twyne config get-account        # show configured account
+twyne config get-rpc                   # all configured RPCs
+twyne config get-rpc --chain megaeth   # one chain
+twyne config clear-rpc --chain megaeth # remove one chain's RPC
+twyne config set-default-chain megaeth # change default --chain
+twyne config set-account <alias>       # save default signing account
+twyne config get-account               # show configured account
 ```
 
 ## Global Flags
@@ -57,7 +87,8 @@ Available on all commands:
 
 | Flag | Purpose |
 |------|---------|
-| `--rpc <url>` | Ethereum RPC URL |
+| `--chain <slug-or-id>` | Target chain (`mainnet`, `megaeth`, or chain id; default `mainnet`) |
+| `--rpc <url>` | RPC URL (overrides env/config for the active chain) |
 | `--json` | Force JSON output |
 | `--block <number>` | Query at specific historical block |
 | `--no-cache` | Bypass vault cache, force full rescan |
@@ -214,10 +245,19 @@ twyne tx collateral repay <vault> max --gas-limit 500000
 
 ```bash
 uv sync
-uv run pytest tests/                 # unit tests
-uv run pytest tests/integration/     # integration tests (requires RPC)
+uv run pytest tests/                            # unit tests (mainnet + MegaETH)
+uv run pytest tests/integration/                # mainnet fork integration (Anvil on 8454)
+uv run pytest tests/integration/megaeth/ --live # MegaETH live read-only smoke
 uv run ruff check src/ tests/
 ```
+
+MegaETH fork tests (when added later) start Anvil with:
+
+```bash
+anvil --fork-url https://mainnet.megaeth.com/rpc --chain-id 4326 --port 8455
+```
+
+The `--live` flag opts into read-only RPC tests against `https://mainnet.megaeth.com/rpc`. Without `--live`, all live-tagged tests are skipped.
 
 ## Troubleshooting
 

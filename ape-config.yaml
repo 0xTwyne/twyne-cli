@@ -7,3 +7,11 @@ ethereum:
       auto:
         multiplier: 1.5
     base_fee_multiplier: 1.4
+
+networks:
+  custom:
+    - name: megaeth
+      chain_id: 4326
+      ecosystem: ethereum
+      gas_limit: auto
+      base_fee_multiplier: 1.4
