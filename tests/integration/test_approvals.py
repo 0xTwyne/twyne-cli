@@ -18,17 +18,10 @@ from twyne_cli.contracts import collateral_vault, erc20
 from twyne_cli.transactions import ensure_allowance
 
 from .conftest import (
-    DEFAULT_LIQ_LTV,
-    ERC20_ABI,
     EULER_EWETH,
-    EULER_EWETH_IV,
-    EULER_TARGET_VAULT,
     _approve_erc20,
-    _balance_of,
-    _create_vault_via_evc,
     _deposit_via_evc,
 )
-
 
 # ---------------------------------------------------------------------------
 # 1. ensure_allowance — unit-level tests against Anvil

@@ -95,7 +95,11 @@ def tx_options(f):
     f = click.option("--account", "account_alias", default=None,
                      help="Ape account alias (from 'ape accounts import')")(f)
     f = click.option("--private-key", "private_key", default=None,
-                     help="Raw private key (or set PRIVATE_KEY env var)")(f)
+                     help="DEPRECATED: leaks via shell history / ps / log aggregators. "
+                          "Use --account, --private-key-file, PRIVATE_KEY env var, or the interactive prompt.")(f)
+    f = click.option("--private-key-file", "private_key_file", default=None,
+                     type=click.Path(exists=True, dir_okay=False, readable=True),
+                     help="Path to a file containing the private key (mode 0600 required)")(f)
     f = click.option("--dry-run", is_flag=True, default=False,
                      help="Simulate only, don't submit")(f)
     f = click.option("--yes", "skip_confirm", is_flag=True, default=False,
@@ -235,11 +239,11 @@ def collateral():
 @click.argument("amount")
 @tx_options
 @pass_ctx
-def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval):
+def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval):
     """Deposit collateral token into a vault."""
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
@@ -283,11 +287,11 @@ def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key
 @click.argument("amount")
 @tx_options
 @pass_ctx
-def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval):
+def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval):
     """Deposit underlying asset (e.g., raw ETH for a wstETH vault)."""
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
@@ -332,11 +336,11 @@ def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, 
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
 @pass_ctx
-def withdraw(ctx: TwyneContext, vault_address, amount, receiver, account_alias, private_key, dry_run, skip_confirm, raw, **_):
+def withdraw(ctx: TwyneContext, vault_address, amount, receiver, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, **_):
     """Withdraw collateral from a vault."""
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
@@ -375,11 +379,11 @@ def withdraw(ctx: TwyneContext, vault_address, amount, receiver, account_alias, 
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
 @pass_ctx
-def redeem_underlying(ctx: TwyneContext, vault_address, amount, receiver, account_alias, private_key, dry_run, skip_confirm, raw, **_):
+def redeem_underlying(ctx: TwyneContext, vault_address, amount, receiver, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, **_):
     """Withdraw as underlying asset from a vault."""
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
@@ -418,11 +422,11 @@ def redeem_underlying(ctx: TwyneContext, vault_address, amount, receiver, accoun
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
 @pass_ctx
-def borrow(ctx: TwyneContext, vault_address, amount, receiver, account_alias, private_key, dry_run, skip_confirm, raw, **_):
+def borrow(ctx: TwyneContext, vault_address, amount, receiver, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, **_):
     """Borrow from the external protocol via a collateral vault."""
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
@@ -460,11 +464,11 @@ def borrow(ctx: TwyneContext, vault_address, amount, receiver, account_alias, pr
 @click.argument("amount")
 @tx_options
 @pass_ctx
-def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval):
+def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval):
     """Repay borrowed amount to a collateral vault."""
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
@@ -513,11 +517,11 @@ def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, 
 @click.argument("ltv", type=int)
 @tx_options
 @pass_ctx
-def set_ltv(ctx: TwyneContext, vault_address, ltv, account_alias, private_key, dry_run, skip_confirm, **_):
+def set_ltv(ctx: TwyneContext, vault_address, ltv, account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
     """Set liquidation LTV on a collateral vault (basis points, e.g., 8500 = 85%)."""
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
 
         sim = simulate_tx(cv, "setTwyneLiqLTV", [ltv], sender=account)
@@ -550,11 +554,11 @@ def set_ltv(ctx: TwyneContext, vault_address, ltv, account_alias, private_key, d
 @click.argument("vault_address", shell_complete=complete_vault_address)
 @tx_options
 @pass_ctx
-def liquidate(ctx: TwyneContext, vault_address, account_alias, private_key, dry_run, skip_confirm, **_):
+def liquidate(ctx: TwyneContext, vault_address, account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
     """Liquidate an unhealthy collateral vault position."""
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
 
         sim = simulate_tx(cv, "liquidate", [], sender=account)
@@ -586,11 +590,11 @@ def liquidate(ctx: TwyneContext, vault_address, account_alias, private_key, dry_
 @click.argument("vault_address", shell_complete=complete_vault_address)
 @tx_options
 @pass_ctx
-def skim(ctx: TwyneContext, vault_address, account_alias, private_key, dry_run, skip_confirm, **_):
+def skim(ctx: TwyneContext, vault_address, account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
     """Skim excess tokens from a collateral vault."""
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
 
         sim = simulate_tx(cv, "skim", [], sender=account)
@@ -635,12 +639,12 @@ def credit():
               help="Which wrapper to use (euler or aave)")
 @tx_options
 @pass_ctx
-def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
+def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
     """Deposit underlying asset into an intermediate vault via wrapper."""
     _check_protocol_supported(protocol)
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         wrapper = euler_wrapper() if protocol == "euler" else aave_wrapper()
 
         # Get decimals from the intermediate vault's asset
@@ -692,12 +696,12 @@ def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alia
               help="Which wrapper to use (euler or aave)")
 @tx_options
 @pass_ctx
-def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
+def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
     """Deposit underlying asset into intermediate vault (alias for deposit)."""
     _check_protocol_supported(protocol)
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         wrapper = euler_wrapper() if protocol == "euler" else aave_wrapper()
 
         cv = credit_vault(iv_address)
@@ -745,11 +749,11 @@ def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, a
 @click.argument("amount")
 @tx_options
 @pass_ctx
-def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, private_key, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
+def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
     """Deposit Aave aTokens into an intermediate vault via aToken wrapper."""
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         wrapper = aave_atoken_wrapper(iv_address)
 
         cv = credit_vault(iv_address)
@@ -796,11 +800,11 @@ def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, privat
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
 @pass_ctx
-def credit_withdraw(ctx: TwyneContext, iv_address, amount, receiver, account_alias, private_key, dry_run, skip_confirm, raw, **_):
+def credit_withdraw(ctx: TwyneContext, iv_address, amount, receiver, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, **_):
     """Withdraw assets from an intermediate vault (ERC4626 withdraw)."""
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = credit_vault(iv_address)  # ERC4626-compatible interface
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
@@ -839,11 +843,11 @@ def credit_withdraw(ctx: TwyneContext, iv_address, amount, receiver, account_ali
 @click.option("--receiver", default=None, help="Receiver address (defaults to sender)")
 @tx_options
 @pass_ctx
-def credit_redeem(ctx: TwyneContext, iv_address, shares, receiver, account_alias, private_key, dry_run, skip_confirm, raw, **_):
+def credit_redeem(ctx: TwyneContext, iv_address, shares, receiver, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, **_):
     """Redeem shares from an intermediate vault (ERC4626 redeem)."""
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = credit_vault(iv_address)  # ERC4626-compatible interface
         decimals = 18  # EVault shares are always 18 decimals
         raw_shares = parse_amount(shares, decimals, raw=raw)
@@ -904,7 +908,7 @@ def operators():
 @pass_ctx
 def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
              underlying_deposit,
-             account_alias, private_key, dry_run, skip_confirm, raw, **_):
+             account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, **_):
     """Execute leverage via Morpho flash loan + Euler swap.
 
     Flash borrows target asset, swaps to collateral, deposits into vault,
@@ -918,7 +922,7 @@ def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
 
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
 
         # Derive token addresses from vault state
@@ -1066,7 +1070,7 @@ def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
 @pass_ctx
 def deleverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
                max_debt, withdraw_amount,
-               account_alias, private_key, dry_run, skip_confirm, raw, **_):
+               account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, **_):
     """Execute deleverage via flash loan + Euler swap.
 
     Flash loans collateral, swaps to debt token, repays debt, withdraws collateral.
@@ -1074,7 +1078,7 @@ def deleverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
     """
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
@@ -1144,7 +1148,7 @@ def deleverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
 @tx_options
 @pass_ctx
 def teleport(ctx: TwyneContext, vault_address, target_vault_address, protocol,
-             account_alias, private_key, dry_run, skip_confirm, **_):
+             account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
     """Teleport a position from one collateral vault to another.
 
     Euler: calls cv.teleport() directly.
@@ -1152,7 +1156,7 @@ def teleport(ctx: TwyneContext, vault_address, target_vault_address, protocol,
     """
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
 
         details = [
@@ -1269,7 +1273,7 @@ def _build_close_position_batch(
 @tx_options
 @pass_ctx
 def close_position(ctx: TwyneContext, vault_address, slippage, protocol,
-                   account_alias, private_key, dry_run, skip_confirm, **_):
+                   account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
     """Close an entire position by selling collateral to repay debt.
 
     Uses the deleverage operator with a flash loan + swap to atomically
@@ -1279,7 +1283,7 @@ def close_position(ctx: TwyneContext, vault_address, slippage, protocol,
     """
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
 
         # 1. Read vault state
@@ -1423,7 +1427,7 @@ def factory():
 @tx_options
 @pass_ctx
 def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type, ltv, target_asset,
-                 account_alias, private_key, dry_run, skip_confirm, **_):
+                 account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
     """Create a new collateral vault via the factory.
 
     INTERMEDIATE_VAULT: The Twyne Intermediate Vault (CreditEVault) address.
@@ -1437,7 +1441,7 @@ def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type
 
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
 
         # v1.0.5: factory.createCollateralVault takes the IV address directly as
         # _intermediateVault (verified via vaultManager.isIntermediateVault). Pre-v1.0.5
@@ -1567,7 +1571,7 @@ def _build_open_position_batch(
 @pass_ctx
 def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_type, ltv,
                   target_asset, deposit_amount, borrow_amount,
-                  account_alias, private_key, dry_run, skip_confirm, **_):
+                  account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
     """Create a vault, deposit collateral, and optionally borrow — in one atomic EVC batch.
 
     INTERMEDIATE_VAULT: The Twyne Intermediate Vault (CreditEVault) address.
@@ -1587,7 +1591,7 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
 
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
 
         fct = collateral_vault_factory()
         target_asset_addr = target_asset or ZERO_ADDRESS
@@ -1718,7 +1722,7 @@ def batch():
 @click.option("--evc-address", default=None, help="EVC address override (defaults to batch file or Twyne EVC)")
 @tx_options
 @pass_ctx
-def execute(ctx: TwyneContext, batch_file, evc_address, account_alias, private_key, dry_run, skip_confirm,
+def execute(ctx: TwyneContext, batch_file, evc_address, account_alias, private_key, private_key_file, dry_run, skip_confirm,
             max_approve=False, skip_approval=False, **_):
     """Execute a batch of operations via EVC.batch().
 
@@ -1726,7 +1730,7 @@ def execute(ctx: TwyneContext, batch_file, evc_address, account_alias, private_k
     """
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         batch_data = parse_batch_file(batch_file)
         gas_kwargs = _build_gas_kwargs(**_)
 
@@ -1785,7 +1789,7 @@ def execute(ctx: TwyneContext, batch_file, evc_address, account_alias, private_k
 @click.option("--evc-address", default=None, help="EVC address override (defaults to batch file or Twyne EVC)")
 @tx_options
 @pass_ctx
-def simulate(ctx: TwyneContext, batch_file, evc_address, account_alias, private_key, **_):
+def simulate(ctx: TwyneContext, batch_file, evc_address, account_alias, private_key, private_key_file, **_):
     """Simulate a batch of operations via EVC.batchSimulation().
 
     BATCH_FILE: Path to YAML or JSON batch definition file.
@@ -1793,7 +1797,7 @@ def simulate(ctx: TwyneContext, batch_file, evc_address, account_alias, private_
     """
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
         batch_data = parse_batch_file(batch_file)
 
         evc_addr = evc_address or batch_data.get("evc") or get_address("evc")
@@ -1892,7 +1896,7 @@ def discover_positions(ctx: TwyneContext, wallet_address, protocol):
 @tx_options
 @pass_ctx
 def migrate_position(ctx: TwyneContext, wallet_address, protocol, ltv, position_num,
-                     account_alias, private_key, dry_run, skip_confirm, **_):
+                     account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
     """Migrate an existing Euler/Aave position to Twyne in one transaction.
 
     WALLET_ADDRESS: The wallet holding the lending position to migrate.
@@ -1905,7 +1909,7 @@ def migrate_position(ctx: TwyneContext, wallet_address, protocol, ltv, position_
 
     ctx.connect()
     try:
-        account = resolve_account(account_alias, private_key)
+        account = resolve_account(account_alias, private_key, private_key_file)
 
         # 1. Discover positions
         if protocol == "euler":

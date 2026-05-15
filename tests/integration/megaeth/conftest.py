@@ -153,7 +153,6 @@ def _deal_erc20(token: str, holder: str, amount_wei: int, slot_candidates=(0, 1,
     holds `_balances` — OpenZeppelin uses 0, but proxied / upgradeable
     layouts often shift it. We probe by writing and verifying.
     """
-    from eth_abi import encode as abi_encode
 
     expected = "0x" + amount_wei.to_bytes(32, "big").hex()
     bal_calldata = "0x70a08231" + "0" * 24 + holder[2:].lower()

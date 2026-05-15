@@ -13,10 +13,9 @@ _increase_iv_supply_cap() raises it to 100 eWETH to prevent
 E_SupplyCapExceeded (0x426073f2) errors during test deposit accumulation.
 """
 
-import pytest
 from ape import Contract
 
-from twyne_cli.contracts import aave_atoken_wrapper, collateral_vault, credit_vault, euler_wrapper
+from twyne_cli.contracts import aave_atoken_wrapper, credit_vault, euler_wrapper
 from twyne_cli.transactions import simulate_tx
 
 from .conftest import (
@@ -25,7 +24,6 @@ from .conftest import (
     EULER_EWETH_IV,
     EVAULT_ABI,
     WETH,
-    _deposit_eweth_to_iv,
 )
 
 # --------------------------------------------------------------------------- #

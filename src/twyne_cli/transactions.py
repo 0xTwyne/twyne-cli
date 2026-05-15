@@ -1,14 +1,56 @@
 """Shared transaction helpers — account resolution, simulation, submission."""
 
 import os
+import stat
+import sys
 
 import click
 
 
-def resolve_account(account_alias: str | None, private_key: str | None):
-    """Resolve a signing account from alias or private key.
+def _read_key_file(path: str) -> str:
+    """Read a private key from a file, enforcing mode 0600.
 
-    Priority: --account alias > --private-key flag > PRIVATE_KEY env var > config default_account.
+    Refuses files readable by group or other (any of `g+rwx` / `o+rwx` set).
+    Strips trailing whitespace/newline and an optional leading `0x`.
+    """
+    st = os.stat(path)
+    if st.st_mode & 0o077:
+        actual = stat.filemode(st.st_mode)
+        raise click.UsageError(
+            f"--private-key-file refuses to read {path}: insecure permissions ({actual}). "
+            f"Fix with: chmod 600 {path}"
+        )
+    with open(path) as f:
+        return f.readline().strip()
+
+
+def _prompt_for_key() -> str:
+    """Prompt interactively for a private key, no-echo, or read one line from piped stdin."""
+    if sys.stdin.isatty():
+        return click.prompt("Private key", hide_input=True).strip()
+    line = sys.stdin.readline().strip()
+    if not line:
+        raise click.UsageError(
+            "No signing key on stdin. Pipe a key (echo $KEY | twyne tx ...) or run interactively."
+        )
+    return line
+
+
+def resolve_account(
+    account_alias: str | None,
+    private_key: str | None,
+    private_key_file: str | None = None,
+):
+    """Resolve a signing account.
+
+    Precedence:
+      1. --account <alias>             (Ape keystore — most secure persistent option)
+      2. --private-key-file <path>     (file, mode 0600 required)
+      3. --private-key <key>           (DEPRECATED — leaks via shell history / ps / log aggregators)
+      4. PRIVATE_KEY env var
+      5. Interactive TTY prompt (no echo), or one-line stdin read when piped
+      6. config default_account
+
     Returns an Ape AccountAPI instance.
     """
     from ape import accounts
@@ -16,27 +58,43 @@ def resolve_account(account_alias: str | None, private_key: str | None):
     if account_alias:
         return accounts.load(account_alias)
 
-    pk = private_key or os.environ.get("PRIVATE_KEY")
-    if pk:
-        if not pk.startswith("0x"):
-            pk = "0x" + pk
-        from ape_test.accounts import TestAccount
-        from eth_account import Account as EthAccount
+    pk: str | None = None
+    if private_key_file:
+        pk = _read_key_file(private_key_file)
+    elif private_key:
+        click.echo(
+            "WARNING: --private-key is deprecated. The flag exposes the key to shell history, "
+            "process listings (ps), and log aggregators. Prefer --account (Ape keystore), "
+            "--private-key-file (chmod 600), the PRIVATE_KEY env var (set via 'read -s'), "
+            "or the interactive prompt (omit all key flags).",
+            err=True,
+        )
+        pk = private_key
+    elif env_pk := os.environ.get("PRIVATE_KEY"):
+        pk = env_pk
+    else:
+        # Fall back to config default_account before prompting
+        from .commands.config import load_config
 
-        eth_acct = EthAccount.from_key(pk)
-        return TestAccount(index=0, address_str=eth_acct.address, private_key=pk)
+        default = load_config().get("default_account")
+        if default:
+            return accounts.load(default)
+        pk = _prompt_for_key()
 
-    # Fall back to config default_account
-    from .commands.config import load_config
+    if not pk:
+        raise click.UsageError(
+            "No signing account specified. Use --account <alias>, --private-key-file <path>, "
+            "set PRIVATE_KEY env var, or run interactively to be prompted.\n"
+            "Tip: run 'twyne init' to set up a default account."
+        )
 
-    default = load_config().get("default_account")
-    if default:
-        return accounts.load(default)
+    if not pk.startswith("0x"):
+        pk = "0x" + pk
+    from ape_test.accounts import TestAccount
+    from eth_account import Account as EthAccount
 
-    raise click.UsageError(
-        "No signing account specified. Use --account <alias> or --private-key <key> or set PRIVATE_KEY env var.\n"
-        "Tip: run 'twyne init' to set up a default account."
-    )
+    eth_acct = EthAccount.from_key(pk)
+    return TestAccount(index=0, address_str=eth_acct.address, private_key=pk)
 
 
 def parse_amount(value: str, decimals: int, raw: bool = False) -> int:

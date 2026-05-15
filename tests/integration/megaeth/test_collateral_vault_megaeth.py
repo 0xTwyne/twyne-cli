@@ -13,11 +13,10 @@ from __future__ import annotations
 import pytest
 from click.testing import CliRunner
 
-from twyne_cli.contracts import collateral_vault, erc20
+from twyne_cli.contracts import collateral_vault
 from twyne_cli.transactions import simulate_tx
 
 from .conftest import (
-    ANVIL_RPC_MEGA,
     DEFAULT_LIQ_LTV,
     USDE,
     USDM,

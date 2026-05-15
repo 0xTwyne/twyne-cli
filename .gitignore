@@ -26,5 +26,6 @@ venv/
 .DS_Store
 Thumbs.db
 
-# uv
-uv.lock
+# GitNexus index dir — contains a per-clone meta.json with a GitHub PAT.
+# Never commit; never let it enter history. Ignored repo-wide.
+.gitnexus/
