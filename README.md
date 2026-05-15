@@ -5,14 +5,34 @@ Lightweight CLI for querying and interacting with the Twyne protocol on-chain.
 ## Install
 
 ```bash
-uv tool install .
+uv sync --frozen        # install pinned dependencies into .venv (wheels-only)
+uv tool install .       # makes the `twyne` command available globally
 ```
 
-This makes the `twyne` command available globally. To update after code changes:
+`uv sync --frozen` installs exactly what `uv.lock` pins and verifies each artifact's
+hash. The lockfile is generated with `uv lock --no-build`, so every install resolves
+to a wheel (no `setup.py` code from third-party packages runs at install time). A
+small allowlist of pure-Python sdist-only packages (`lazyasd`, `python-baseconv`,
+`varint`) is the only exception; CI fails if the set of sdist-only dependencies grows.
+
+Update after code changes:
 
 ```bash
 uv tool install --reinstall .
 ```
+
+### Maintainer note — adding or updating dependencies
+
+When changing dependencies in `pyproject.toml`, always refresh the lockfile with the
+wheels-only flag so a future install cannot silently fall back to building an sdist:
+
+```bash
+uv lock --no-build
+```
+
+If a new dependency is sdist-only on PyPI, `uv lock --no-build` will include it (uv
+falls back when no wheel exists anywhere) and the CI sdist sentinel will fail until
+the package is reviewed and added to the allowlist in `.github/workflows/check.yml`.
 
 ## Quick Start
 
@@ -127,14 +147,22 @@ twyne --block 21000000 vault health <address>
 
 All transaction commands live under `twyne tx`. They simulate before submitting and support `--dry-run`, `--yes` (skip confirmation), and `--raw` (treat amount as raw wei).
 
-Authentication: `--account <alias>` (Ape keystore) or `--private-key <key>` (or `$PRIVATE_KEY`).
+Signing key resolution (in order; first match wins):
+
+1. `--account <alias>` — Ape keystore alias (`ape accounts import <alias>` once, then reference by name)
+2. `--private-key-file <path>` — file containing the raw key, **mode `0600` required**
+3. `--private-key <key>` — **DEPRECATED**; the flag leaks via shell history, `ps` listings, and log aggregators. Still works (emits a warning) so existing scripts keep running, but plan to remove in a future release.
+4. `$PRIVATE_KEY` env var — set with `read -s PRIVATE_KEY` to avoid shell-history capture
+5. Interactive prompt — when no source is configured and stdin is a TTY, the CLI prompts (no echo). For scripted use, pipe the key: `echo "$KEY" | twyne tx ...`
+6. Config `default_account` — set once via `twyne config set-account <alias>`
 
 Shared transaction options:
 
 | Option | Purpose |
 |--------|---------|
-| `--account <alias>` | Ape account alias |
-| `--private-key <key>` | Raw private key (or `$PRIVATE_KEY` env var) |
+| `--account <alias>` | Ape account alias (preferred — `ape accounts import` first) |
+| `--private-key-file <path>` | Path to file containing the key (mode `0600` enforced) |
+| `--private-key <key>` | **DEPRECATED**; leaks the key — see precedence above |
 | `--dry-run` | Simulate only |
 | `--yes` | Skip confirmation prompt |
 | `--raw` | Treat amount as raw wei |

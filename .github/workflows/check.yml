@@ -1,0 +1,79 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@e06108dd0aef18192324c70427afc47652e63a82  # v7.5.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies (lockfile-frozen)
+        run: uv sync --frozen
+
+      - name: Verify lockfile is fresh
+        run: uv lock --check
+
+      - name: Sdist sentinel — fail if the set of sdist-only deps changed
+        run: |
+          python3 - <<'PY'
+          import re, sys, pathlib
+
+          # Allowlist of dependencies that are sdist-only on PyPI. Each entry is
+          # an intentional, reviewed exception. Adding a new entry to this list
+          # requires a deliberate PR — it expands the supply-chain attack surface.
+          ALLOWLIST = {"lazyasd", "python-baseconv", "varint"}
+
+          text = pathlib.Path("uv.lock").read_text()
+          blocks = re.split(r"(?=^\[\[package\]\])", text, flags=re.MULTILINE)
+          sdist_only = set()
+          for block in blocks:
+              if not block.startswith("[[package]]"):
+                  continue
+              name_match = re.search(r'^name = "([^"]+)"', block, re.MULTILINE)
+              if not name_match:
+                  continue
+              name = name_match.group(1)
+              has_sdist = bool(re.search(r"^sdist = \{", block, re.MULTILINE))
+              has_wheel = bool(re.search(r"^wheels = \[\s*\n?\s*\{", block, re.MULTILINE))
+              if has_sdist and not has_wheel:
+                  sdist_only.add(name)
+
+          new = sdist_only - ALLOWLIST
+          gone = ALLOWLIST - sdist_only
+          if new:
+              print(f"ERROR: new sdist-only dependencies introduced: {sorted(new)}")
+              print("Each sdist install executes arbitrary code from the package's setup.py.")
+              print("If this is intentional, add the package name to the ALLOWLIST in")
+              print(".github/workflows/check.yml after reviewing the package's setup.py / build.")
+              sys.exit(1)
+          if gone:
+              print(f"NOTE: previously sdist-only packages now have wheels: {sorted(gone)}")
+              print("Consider tightening the ALLOWLIST.")
+          print(f"OK: {len(sdist_only)} sdist-only deps, all in allowlist.")
+          PY
+
+      - name: Lint (ruff)
+        run: uvx ruff check src/ tests/
+
+      - name: Unit tests
+        run: uv run pytest tests/ --ignore=tests/integration -q
+
+      - name: Smoke import
+        run: uv run python -c "import twyne_cli; print('import ok:', twyne_cli.__name__)"

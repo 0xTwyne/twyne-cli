@@ -8,7 +8,6 @@ commands wire through cleanly when the user supplies the IV address directly.
 
 from __future__ import annotations
 
-import pytest
 from click.testing import CliRunner
 
 from twyne_cli.contracts import collateral_vault, collateral_vault_factory

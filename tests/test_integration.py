@@ -12,7 +12,7 @@ import os
 
 import httpx
 import pytest
-from ape import accounts, networks
+from ape import networks
 from ape.logging import logger as ape_logger
 
 # ---------------------------------------------------------------------------

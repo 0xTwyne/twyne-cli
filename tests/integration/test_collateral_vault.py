@@ -9,7 +9,6 @@ Vault creation uses conftest._create_vault_via_evc() which calls the real v2
 factory through EVC.batch() (the factory's callThroughEVC modifier requires it).
 """
 
-import pytest
 from ape import Contract
 
 from twyne_cli.contracts import collateral_vault, collateral_vault_factory, erc20

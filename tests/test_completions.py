@@ -1,8 +1,6 @@
 """Tests for shell completion functions and the completion command."""
 
 import json
-import os
-import tempfile
 from unittest.mock import patch
 
 import pytest
@@ -14,7 +12,6 @@ from twyne_cli.completions import (
     complete_target_vault,
     complete_vault_address,
 )
-
 
 # --------------------------------------------------------------------------- #
 # Vault address completion (from cache)
@@ -156,6 +153,7 @@ def test_asset_or_iv_delegates():
 
 def test_completion_command_bash():
     from click.testing import CliRunner
+
     from twyne_cli.commands.completion import completion
 
     runner = CliRunner()
@@ -166,6 +164,7 @@ def test_completion_command_bash():
 
 def test_completion_command_zsh():
     from click.testing import CliRunner
+
     from twyne_cli.commands.completion import completion
 
     runner = CliRunner()
@@ -176,6 +175,7 @@ def test_completion_command_zsh():
 
 def test_completion_command_fish():
     from click.testing import CliRunner
+
     from twyne_cli.commands.completion import completion
 
     runner = CliRunner()
@@ -186,6 +186,7 @@ def test_completion_command_fish():
 
 def test_completion_command_invalid_shell():
     from click.testing import CliRunner
+
     from twyne_cli.commands.completion import completion
 
     runner = CliRunner()

@@ -7,7 +7,6 @@ which routes USDe → Aave (gets aUSDe) → aTokenWrapper (gets shares) → IV.
 
 from __future__ import annotations
 
-import pytest
 from click.testing import CliRunner
 from eth_abi import encode as abi_encode
 
