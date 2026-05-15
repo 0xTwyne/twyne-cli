@@ -5,10 +5,13 @@ description = "Lightweight CLI for querying Twyne protocol state on-chain"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "eth-ape[recommended-plugins]>=0.8.47",
-    "pyyaml>=6.0",
-    "httpx>=0.27",
-    "requests>=2.31",
+    # Upper bounds prevent `uv lock` refreshes from silently pulling in a
+    # breaking-change major (or pre-1.0 0.x→0.y, which Ape and httpx treat
+    # as breaking). Bump the ceiling intentionally when adopting a new major.
+    "eth-ape[recommended-plugins]>=0.8.47,<0.9",
+    "pyyaml>=6.0,<7",
+    "httpx>=0.27,<0.29",
+    "requests>=2.31,<3",
 ]
 
 [project.scripts]
