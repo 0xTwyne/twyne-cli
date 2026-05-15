@@ -2997,10 +2997,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "eth-ape", extras = ["recommended-plugins"], specifier = ">=0.8.47" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "requests", specifier = ">=2.31" },
+    { name = "eth-ape", extras = ["recommended-plugins"], specifier = ">=0.8.47,<0.9" },
+    { name = "httpx", specifier = ">=0.27,<0.29" },
+    { name = "pyyaml", specifier = ">=6.0,<7" },
+    { name = "requests", specifier = ">=2.31,<3" },
 ]
 
 [[package]]
