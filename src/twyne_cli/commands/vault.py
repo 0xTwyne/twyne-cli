@@ -1,21 +1,16 @@
-"""Vault commands — health, info, list."""
+"""Vault commands — health, info, list, simulate.
+
+`info` and `health` read the shared `vault_state.read_cv_state()` (backed by the
+on-chain HealthStatViewer), so they report the same numbers as `simulate`.
+"""
 
 import click
 
 from ..cache import get_vault_cache
 from ..completions import complete_vault_address
-from ..constants import USD_ADDRESS, WAD
 from ..context import TwyneContext, pass_ctx
-from ..contracts import (
-    aave_oracle,
-    aave_v3_pool,
-    collateral_vault,
-    euler_oracle,
-)
 from ..formatting import (
     format_address,
-    format_bps,
-    format_usd,
     is_tty,
     output_json,
     output_kv,
@@ -23,17 +18,37 @@ from ..formatting import (
 )
 
 
-def _detect_protocol(cv_contract, block: int | None) -> str:
-    """Detect whether a collateral vault is Aave or Euler based."""
-    from ape.exceptions import ContractLogicError
+def _amt(native: float, usd: float, sym: str) -> str:
+    return f"{native:,.4f} {sym}  (${usd:,.2f})"
 
+
+def _hf_str(v: float) -> str:
+    return "∞" if v == float("inf") else f"{v:.4f}"
+
+
+def _risk_level(state) -> str:
+    """Qualitative bucket of the on-chain inHF (display label, not protocol math)."""
+    if state.liquidatable:
+        return "LIQUIDATABLE"
+    if state.in_hf < 1.05:
+        return "critical"
+    if state.in_hf < 1.20:
+        return "elevated"
+    return "healthy"
+
+
+def _read_state(ctx: TwyneContext, address: str, hsv: str | None):
+    """Resolve RPC + HSV and read CV state; exit(1) with a message on failure."""
+    from .. import vault_state as vs
+
+    rpc = vs.resolve_read_rpc(ctx)
+    hsv_addr = vs.resolve_hsv(ctx.chain.chain_id, hsv)
+    block = ctx.resolve_block()
     try:
-        atoken = cv_contract.aToken(block_identifier=block)
-        if atoken and int(atoken, 16) != 0:
-            return "aave"
-        return "euler"
-    except (ContractLogicError, Exception):
-        return "euler"
+        return vs.read_cv_state(rpc, hsv_addr, address, block if block is not None else "latest"), hsv_addr
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1) from e
 
 
 @click.group()
@@ -44,138 +59,77 @@ def vault():
 
 @vault.command()
 @click.argument("address", shell_complete=complete_vault_address)
+@click.option("--hsv", default=None, help="HealthStatViewer address override")
 @pass_ctx
-def health(ctx: TwyneContext, address: str):
-    """Show health factors for a collateral vault."""
-    click.echo(
-        "Error: HealthStatViewer contract removed in v1.0.5. "
-        "Health queries temporarily unavailable. "
-        "Use 'twyne vault info' for basic vault state.",
-        err=True,
+def health(ctx: TwyneContext, address: str, hsv: str | None):
+    """Show health factors, LTVs, and risk for a collateral vault."""
+    st, hsv_addr = _read_state(ctx, address, hsv)
+    risk = _risk_level(st)
+
+    if ctx.force_json or not is_tty():
+        output_json({"vault": address, "hsv": hsv_addr, "risk": risk, **st.to_dict()})
+        return
+
+    output_kv(
+        [
+            ("Vault", address),
+            ("Protocol", st.protocol),
+            ("", ""),
+            ("Internal HF (inHF)", _hf_str(st.in_hf)),
+            ("External HF (extHF)", _hf_str(st.ext_hf)),
+            ("", ""),
+            ("Operating LTV (LTV_t)", f"{st.twyne_ltv_pct:.2f}%"),
+            ("Liquidation LTV (~LTV_t)", f"{st.twyne_liq_ltv_pct:.2f}%"),
+            ("External LTV (LTV_e)", f"{st.external_ltv_pct:.2f}%"),
+            ("External Liq LTV (~LTV_e)", f"{st.external_liq_ltv_pct:.2f}%"),
+            ("", ""),
+            ("Liquidatable", "yes" if st.liquidatable else "no"),
+            ("Risk", risk),
+        ],
+        title="Vault Health",
     )
-    raise SystemExit(1)
 
 
 @vault.command()
 @click.argument("address", shell_complete=complete_vault_address)
+@click.option("--hsv", default=None, help="HealthStatViewer address override")
 @pass_ctx
-def info(ctx: TwyneContext, address: str):
-    """Show full state of a collateral vault."""
-    from ape_ethereum.multicall import Call
+def info(ctx: TwyneContext, address: str, hsv: str | None):
+    """Show full state of a collateral vault (collateral, debt, LTVs, health)."""
+    st, hsv_addr = _read_state(ctx, address, hsv)
 
-    ctx.connect()
-    try:
-        block = ctx.resolve_block()
-        cv = collateral_vault(address)
+    if ctx.force_json or not is_tty():
+        output_json({"vault": address, "hsv": hsv_addr, **st.to_dict()})
+        return
 
-        # Phase 1: basic vault state via multicall
-        call1 = Call()
-        call1.add(cv.totalAssetsDepositedOrReserved)
-        call1.add(cv.maxRelease)
-        call1.add(cv.maxRepay)
-        call1.add(cv.asset)
-        call1.add(cv.targetAsset)
-        call1.add(cv.twyneLiqLTV)
-        call1.add(cv.borrower)
-        call1.add(cv.canLiquidate)
-        call1.add(cv.canRebalance)
-
-        results1 = list(call1(block_identifier=block))
-        total_assets = results1[0]
-        max_release = results1[1]  # credit reserved (C_LP)
-        max_repay = results1[2]    # debt (B)
-        asset_addr = results1[3]
-        target_asset_addr = results1[4]
-        twyne_liq_ltv = results1[5]
-        borrower = results1[6]
-        can_liquidate = results1[7]
-        can_rebalance = results1[8]
-
-        user_collateral = total_assets - max_release
-
-        # Detect protocol and get USD values
-        is_aave = _detect_protocol(cv, block) == "aave"
-
-        if is_aave:
-            oracle = aave_oracle()
-            pool = aave_v3_pool()
-
-            call2 = Call()
-            call2.add(oracle.getQuote, total_assets, asset_addr, USD_ADDRESS)
-            call2.add(oracle.getQuote, max_release, asset_addr, USD_ADDRESS)
-            call2.add(oracle.getQuote, user_collateral, asset_addr, USD_ADDRESS)
-            call2.add(pool.getUserAccountData, address)
-
-            results2 = list(call2(block_identifier=block))
-            total_assets_usd = results2[0] / WAD
-            credit_usd = results2[1] / WAD
-            user_coll_usd = results2[2] / WAD
-            debt_usd = results2[3].totalDebtBase / 1e8
-        else:
-            oracle = euler_oracle()
-
-            call2 = Call()
-            call2.add(oracle.getQuote, total_assets, asset_addr, USD_ADDRESS)
-            call2.add(oracle.getQuote, max_release, asset_addr, USD_ADDRESS)
-            call2.add(oracle.getQuote, user_collateral, asset_addr, USD_ADDRESS)
-            call2.add(oracle.getQuote, max_repay, target_asset_addr, USD_ADDRESS)
-
-            results2 = list(call2(block_identifier=block))
-            total_assets_usd = results2[0] / WAD
-            credit_usd = results2[1] / WAD
-            user_coll_usd = results2[2] / WAD
-            debt_usd = results2[3] / WAD
-
-        # Operating LTV = debt / user_collateral (in USD terms)
-        operating_ltv = (debt_usd / user_coll_usd * 100) if user_coll_usd > 0 else 0.0
-
-        protocol_type = "Aave V3" if is_aave else "Euler"
-
-        if ctx.force_json or not is_tty():
-            output_json({
-                "vault": address,
-                "borrower": borrower,
-                "protocol": protocol_type,
-                "collateral_asset": asset_addr,
-                "borrow_asset": target_asset_addr,
-                "total_assets_raw": str(total_assets),
-                "credit_reserved_raw": str(max_release),
-                "user_collateral_raw": str(user_collateral),
-                "debt_raw": str(max_repay),
-                "total_assets_usd": total_assets_usd,
-                "credit_reserved_usd": credit_usd,
-                "user_collateral_usd": user_coll_usd,
-                "debt_usd": debt_usd,
-                "twyne_liq_ltv_bps": twyne_liq_ltv,
-                "twyne_liq_ltv_pct": twyne_liq_ltv / 100,
-                "operating_ltv_pct": operating_ltv,
-                "can_liquidate": can_liquidate,
-                "can_rebalance": can_rebalance,
-                "note": "Health factors unavailable — HealthStatViewer removed in v1.0.5",
-            })
-        else:
-            output_kv([
-                ("Vault", address),
-                ("Borrower", borrower),
-                ("Protocol", protocol_type),
-                ("Collateral Asset", asset_addr),
-                ("Borrow Asset", target_asset_addr),
-                ("", ""),
-                ("User Collateral (C)", format_usd(user_coll_usd)),
-                ("Credit Reserved (C_LP)", format_usd(credit_usd)),
-                ("Total Assets (C+C_LP)", format_usd(total_assets_usd)),
-                ("Debt (B)", format_usd(debt_usd)),
-                ("", ""),
-                ("Liquidation LTV", format_bps(twyne_liq_ltv)),
-                ("Operating LTV", f"{operating_ltv:.2f}%"),
-                ("External HF", "N/A (HealthStatViewer removed)"),
-                ("Internal HF", "N/A (HealthStatViewer removed)"),
-                ("", ""),
-                ("Can Liquidate", str(can_liquidate)),
-                ("Can Rebalance", str(can_rebalance)),
-            ], title="Vault Info")
-    finally:
-        ctx.disconnect()
+    total_native = st.collateral_native + st.reserved_native
+    total_usd = st.collateral_usd + st.reserved_usd
+    output_kv(
+        [
+            ("Vault", address),
+            ("Borrower", st.borrower),
+            ("Protocol", st.protocol),
+            ("Collateral Asset", st.collateral_token),
+            ("Borrow Asset", st.debt_token),
+            ("", ""),
+            ("User Collateral (C)", _amt(st.collateral_native, st.collateral_usd, st.collateral_symbol)),
+            ("Credit Reserved (C_LP)", _amt(st.reserved_native, st.reserved_usd, st.collateral_symbol)),
+            ("Total Assets (C+C_LP)", _amt(total_native, total_usd, st.collateral_symbol)),
+            ("Debt (B)", _amt(st.borrow_native, st.borrow_usd, st.debt_symbol)),
+            ("", ""),
+            ("Operating LTV (LTV_t)", f"{st.twyne_ltv_pct:.2f}%"),
+            ("Liquidation LTV (~LTV_t)", f"{st.twyne_liq_ltv_pct:.2f}%  (cap {st.max_twyne_ltv_pct:.2f}%)"),
+            ("External LTV (LTV_e)", f"{st.external_ltv_pct:.2f}%"),
+            ("External Liq LTV (~LTV_e)", f"{st.external_liq_ltv_pct:.2f}%"),
+            ("", ""),
+            ("Internal HF (inHF)", _hf_str(st.in_hf)),
+            ("External HF (extHF)", _hf_str(st.ext_hf)),
+            ("Liquidatable", "yes" if st.liquidatable else "no"),
+            ("Can Liquidate", str(st.can_liquidate)),
+            ("Can Rebalance", str(st.can_rebalance)),
+        ],
+        title="Vault Info",
+    )
 
 
 @vault.command()
