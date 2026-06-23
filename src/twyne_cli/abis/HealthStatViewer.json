@@ -1,0 +1,204 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "_aavePool",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "aavePool",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "externalHF",
+    "inputs": [
+      {
+        "name": "collateralVault",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "healthFactor",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "collateralValue",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "liabilityValue",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "health",
+    "inputs": [
+      {
+        "name": "collateralVault",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "extHF",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "inHF",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "externalBorrowDebtValue",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "internalBorrowDebtValue",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "internalHF",
+    "inputs": [
+      {
+        "name": "collateralVault",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "healthFactor",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "collateralValue",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "liabilityValue",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "positionStats",
+    "inputs": [
+      {
+        "name": "collateralVault",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "s",
+        "type": "tuple",
+        "internalType": "struct PositionStats",
+        "components": [
+          {
+            "name": "userCollateralNative",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "userCollateralUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "reservedCreditNative",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "reservedCreditUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "borrowNative",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "borrowUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "twyneLiqLTV",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "twyneLTV",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "externalLiqLTV",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "externalLTV",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "extHF",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "inHF",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "internalType": "uint16",
+            "name": "maxTwyneLTV",
+            "type": "uint16"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  }
+]
