@@ -178,6 +178,70 @@ def info(ctx: TwyneContext, address: str):
         ctx.disconnect()
 
 
+@vault.command()
+@click.argument("address", shell_complete=complete_vault_address)
+@click.option("--tx-file", type=click.Path(exists=True), help="JSON tx file {to,from,data,value,chainId} to simulate")
+@click.option("--to", "to_addr", help="Target contract (inline tx; overrides --tx-file)")
+@click.option("--data", "data_hex", help="Calldata hex (inline tx)")
+@click.option("--from", "from_addr", help="Sender to impersonate (inline tx)")
+@click.option("--value", default=0, help="Wei value (inline tx)")
+@click.option("--block", type=int, default=None, help="Fork at a historical block (default: latest)")
+@click.option("--fork-url", default=None, help="Upstream RPC to fork (default: resolved per chain)")
+@click.option("--rpc", "attach_rpc", default=None, help="Attach to an already-running fork instead of launching anvil")
+@click.option("--hsv", default=None, help="HealthStatViewer address override")
+@pass_ctx
+def simulate(
+    ctx: TwyneContext,
+    address: str,
+    tx_file: str | None,
+    to_addr: str | None,
+    data_hex: str | None,
+    from_addr: str | None,
+    value,
+    block: int | None,
+    fork_url: str | None,
+    attach_rpc: str | None,
+    hsv: str | None,
+):
+    """Simulate a tx against a collateral vault and show before/after state.
+
+    Forks the chain with anvil, snapshots the CV's full state (collateral, debt,
+    LTVs, USD values, health factors) before and after executing the calldata,
+    and prints a side-by-side diff plus a safety verdict.
+
+        twyne vault simulate <cv> --tx-file failing-repay-tx.json
+    """
+    from .. import simulate as sim
+
+    if to_addr and data_hex:
+        tx = {
+            "to": to_addr,
+            "from": from_addr or "0x0000000000000000000000000000000000000000",
+            "data": data_hex,
+            "value": value,
+            "chainId": ctx.chain.chain_id,
+        }
+    elif tx_file:
+        tx = sim.load_tx_file(tx_file)
+    else:
+        raise click.UsageError("provide --tx-file or both --to and --data")
+
+    try:
+        result = sim.simulate(
+            cv_address=address, tx=tx, hsv_address=hsv, fork_url=fork_url, attach_rpc=attach_rpc, block=block
+        )
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1) from e
+
+    if ctx.force_json or not is_tty():
+        for k in ("_before_obj", "_after_obj", "_exec_obj"):
+            result.pop(k, None)
+        output_json(result)
+    else:
+        click.echo(sim.render_report(result))
+
+
 @vault.command("list")
 @pass_ctx
 def list_vaults(ctx: TwyneContext):
