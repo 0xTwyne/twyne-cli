@@ -265,8 +265,10 @@ class TestAaveIVResolution:
         assert result.exit_code == 0
         assert "aToken wrapper" not in result.stderr  # rewrite path removed
         # IV passes through unchanged
+        fn_name = mock_sim.call_args[0][1]
         call_args = mock_sim.call_args[0][2]
-        assert call_args[1] == AAVE_IV
+        assert fn_name == "createAaveV3CollateralVault"
+        assert call_args[0] == AAVE_IV
 
     @patch("twyne_cli.commands.tx.simulate_through_evc")
     @patch("twyne_cli.commands.tx.resolve_account")
@@ -294,8 +296,10 @@ class TestAaveIVResolution:
         # No resolution note on stderr
         assert "aToken wrapper" not in result.stderr
         # Address passed through as-is
+        fn_name = mock_sim.call_args[0][1]
         call_args = mock_sim.call_args[0][2]
-        assert call_args[1] == AAVE_WRAPPER
+        assert fn_name == "createAaveV3CollateralVault"
+        assert call_args[0] == AAVE_WRAPPER
 
     @patch("twyne_cli.commands.tx.simulate_through_evc")
     @patch("twyne_cli.commands.tx.resolve_account")
@@ -325,8 +329,10 @@ class TestAaveIVResolution:
         assert result.exit_code == 0
         assert "collateral asset" not in result.stderr  # rewrite path removed
         # IV passes through unchanged
+        fn_name = mock_sim.call_args[0][1]
         call_args = mock_sim.call_args[0][2]
-        assert call_args[1] == FAKE_IV
+        assert fn_name == "createEulerCollateralVault"
+        assert call_args[0] == FAKE_IV
 
     @patch("twyne_cli.commands.tx.resolve_euler_factory_vault", return_value=None)
     @patch("twyne_cli.commands.tx.simulate_through_evc")
@@ -354,8 +360,10 @@ class TestAaveIVResolution:
         # No resolution note
         assert "collateral asset" not in result.stderr
         # Original address passed through
+        fn_name = mock_sim.call_args[0][1]
         call_args = mock_sim.call_args[0][2]
-        assert call_args[1] == FAKE_IV
+        assert fn_name == "createEulerCollateralVault"
+        assert call_args[0] == FAKE_IV
 
 
 # --------------------------------------------------------------------------- #
@@ -450,8 +458,10 @@ class TestOpenPosition:
         assert "Dry run" in result.output
         # v1.0.5: no rewrite — IV passes through to the factory unchanged.
         assert "collateral asset" not in result.stderr
+        fn_name = mock_sim_evc.call_args[0][1]
         call_args = mock_sim_evc.call_args[0][2]
-        assert call_args[1] == FAKE_IV
+        assert fn_name == "createEulerCollateralVault"
+        assert call_args[0] == FAKE_IV
 
     @patch("twyne_cli.commands.tx.erc20", side_effect=_mock_erc20)
     @patch("twyne_cli.commands.tx.credit_vault")

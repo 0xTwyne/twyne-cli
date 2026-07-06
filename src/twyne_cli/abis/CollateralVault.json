@@ -8,77 +8,16 @@
                 "internalType": "address"
             },
             {
-                "name": "_aavePool",
-                "type": "address",
-                "internalType": "address"
-            },
-            {
-                "name": "_incentiveController",
+                "name": "_targetVault",
                 "type": "address",
                 "internalType": "address"
             }
         ],
-        "stateMutability": "nonpayable"
-    },
-    {
-        "type": "fallback",
         "stateMutability": "nonpayable"
     },
     {
         "type": "function",
         "name": "EVC",
-        "inputs": [],
-        "outputs": [
-            {
-                "name": "",
-                "type": "address",
-                "internalType": "address"
-            }
-        ],
-        "stateMutability": "view"
-    },
-    {
-        "type": "function",
-        "name": "INCENTIVES_CONTROLLER",
-        "inputs": [],
-        "outputs": [
-            {
-                "name": "",
-                "type": "address",
-                "internalType": "contract IRewardsController"
-            }
-        ],
-        "stateMutability": "view"
-    },
-    {
-        "type": "function",
-        "name": "aToken",
-        "inputs": [],
-        "outputs": [
-            {
-                "name": "",
-                "type": "address",
-                "internalType": "address"
-            }
-        ],
-        "stateMutability": "view"
-    },
-    {
-        "type": "function",
-        "name": "aaveDataProvider",
-        "inputs": [],
-        "outputs": [
-            {
-                "name": "",
-                "type": "address",
-                "internalType": "contract IPoolDataProvider"
-            }
-        ],
-        "stateMutability": "view"
-    },
-    {
-        "type": "function",
-        "name": "aaveDebtToken",
         "inputs": [],
         "outputs": [
             {
@@ -180,19 +119,6 @@
     },
     {
         "type": "function",
-        "name": "categoryId",
-        "inputs": [],
-        "outputs": [
-            {
-                "name": "",
-                "type": "uint8",
-                "internalType": "uint8"
-            }
-        ],
-        "stateMutability": "view"
-    },
-    {
-        "type": "function",
         "name": "checkVaultStatus",
         "inputs": [],
         "outputs": [
@@ -202,19 +128,6 @@
                 "internalType": "bytes4"
             }
         ],
-        "stateMutability": "nonpayable"
-    },
-    {
-        "type": "function",
-        "name": "claimRewards",
-        "inputs": [
-            {
-                "name": "assets",
-                "type": "address[]",
-                "internalType": "address[]"
-            }
-        ],
-        "outputs": [],
         "stateMutability": "nonpayable"
     },
     {
@@ -311,9 +224,9 @@
         "name": "initialize",
         "inputs": [
             {
-                "name": "__asset",
+                "name": "__intermediateVault",
                 "type": "address",
-                "internalType": "contract IERC20"
+                "internalType": "address"
             },
             {
                 "name": "__borrower",
@@ -329,16 +242,6 @@
                 "name": "__vaultManager",
                 "type": "address",
                 "internalType": "contract VaultManager"
-            },
-            {
-                "name": "__targetAsset",
-                "type": "address",
-                "internalType": "address"
-            },
-            {
-                "name": "__categoryId",
-                "type": "uint8",
-                "internalType": "uint8"
             }
         ],
         "outputs": [],
@@ -399,19 +302,6 @@
                 "name": "",
                 "type": "uint256",
                 "internalType": "uint256"
-            }
-        ],
-        "stateMutability": "view"
-    },
-    {
-        "type": "function",
-        "name": "name",
-        "inputs": [],
-        "outputs": [
-            {
-                "name": "",
-                "type": "string",
-                "internalType": "string"
             }
         ],
         "stateMutability": "view"
@@ -482,19 +372,6 @@
     },
     {
         "type": "function",
-        "name": "symbol",
-        "inputs": [],
-        "outputs": [
-            {
-                "name": "",
-                "type": "string",
-                "internalType": "string"
-            }
-        ],
-        "stateMutability": "view"
-    },
-    {
-        "type": "function",
         "name": "targetAsset",
         "inputs": [],
         "outputs": [
@@ -521,29 +398,26 @@
     },
     {
         "type": "function",
-        "name": "tenPowAssetDecimals",
-        "inputs": [],
-        "outputs": [
+        "name": "teleport",
+        "inputs": [
             {
-                "name": "",
+                "name": "toDeposit",
                 "type": "uint256",
                 "internalType": "uint256"
-            }
-        ],
-        "stateMutability": "view"
-    },
-    {
-        "type": "function",
-        "name": "tenPowVAssetDecimals",
-        "inputs": [],
-        "outputs": [
+            },
             {
-                "name": "",
+                "name": "toBorrow",
                 "type": "uint256",
                 "internalType": "uint256"
+            },
+            {
+                "name": "subAccountId",
+                "type": "uint8",
+                "internalType": "uint8"
             }
         ],
-        "stateMutability": "view"
+        "outputs": [],
+        "stateMutability": "nonpayable"
     },
     {
         "type": "function",
@@ -580,19 +454,6 @@
                 "name": "",
                 "type": "address",
                 "internalType": "contract VaultManager"
-            }
-        ],
-        "stateMutability": "view"
-    },
-    {
-        "type": "function",
-        "name": "underlyingAsset",
-        "inputs": [],
-        "outputs": [
-            {
-                "name": "",
-                "type": "address",
-                "internalType": "address"
             }
         ],
         "stateMutability": "view"
@@ -813,19 +674,6 @@
     },
     {
         "type": "event",
-        "name": "T_FactoryPause",
-        "inputs": [
-            {
-                "name": "pause",
-                "type": "bool",
-                "indexed": false,
-                "internalType": "bool"
-            }
-        ],
-        "anonymous": false
-    },
-    {
-        "type": "event",
         "name": "T_HandleExternalLiquidation",
         "inputs": [],
         "anonymous": false
@@ -858,6 +706,19 @@
     },
     {
         "type": "event",
+        "name": "T_PauseStateChanged",
+        "inputs": [
+            {
+                "name": "newState",
+                "type": "uint8",
+                "indexed": false,
+                "internalType": "uint8"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "event",
         "name": "T_Rebalance",
         "inputs": [],
         "anonymous": false
@@ -883,22 +744,10 @@
     },
     {
         "type": "event",
-        "name": "T_RemoveAllowedTargetVault",
+        "name": "T_Repay",
         "inputs": [
             {
-                "name": "intermediateVault",
-                "type": "address",
-                "indexed": true,
-                "internalType": "address"
-            },
-            {
-                "name": "targetVault",
-                "type": "address",
-                "indexed": true,
-                "internalType": "address"
-            },
-            {
-                "name": "index",
+                "name": "repayAmount",
                 "type": "uint256",
                 "indexed": false,
                 "internalType": "uint256"
@@ -908,13 +757,44 @@
     },
     {
         "type": "event",
-        "name": "T_Repay",
+        "name": "T_SetAdmin",
         "inputs": [
             {
-                "name": "repayAmount",
-                "type": "uint256",
+                "name": "admin",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "event",
+        "name": "T_SetAllowedMorphoMarket",
+        "inputs": [
+            {
+                "name": "targetVault",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "intermediateVault",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "marketId",
+                "type": "bytes32",
+                "indexed": true,
+                "internalType": "bytes32"
+            },
+            {
+                "name": "set",
+                "type": "bool",
                 "indexed": false,
-                "internalType": "uint256"
+                "internalType": "bool"
             }
         ],
         "anonymous": false
@@ -985,6 +865,12 @@
                 "type": "uint16",
                 "indexed": false,
                 "internalType": "uint16"
+            },
+            {
+                "name": "rampDuration",
+                "type": "uint32",
+                "indexed": false,
+                "internalType": "uint32"
             }
         ],
         "anonymous": false
@@ -998,6 +884,12 @@
                 "type": "address",
                 "indexed": true,
                 "internalType": "address"
+            },
+            {
+                "name": "value",
+                "type": "bool",
+                "indexed": false,
+                "internalType": "bool"
             }
         ],
         "anonymous": false
@@ -1054,30 +946,17 @@
                 "type": "uint16",
                 "indexed": false,
                 "internalType": "uint16"
-            }
-        ],
-        "anonymous": false
-    },
-    {
-        "type": "event",
-        "name": "T_SetOracleResolvedVault",
-        "inputs": [
-            {
-                "name": "collateralAddress",
-                "type": "address",
-                "indexed": true,
-                "internalType": "address"
             },
             {
-                "name": "allow",
-                "type": "bool",
+                "name": "rampDuration",
+                "type": "uint32",
                 "indexed": false,
-                "internalType": "bool"
+                "internalType": "uint32"
             }
         ],
         "anonymous": false
     },
-    {
+{
         "type": "event",
         "name": "T_SetOracleResolvedVault",
         "inputs": [
@@ -1108,6 +987,19 @@
         "inputs": [
             {
                 "name": "newOracleRouter",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "event",
+        "name": "T_SetPauseGuardian",
+        "inputs": [
+            {
+                "name": "pauseGuardian",
                 "type": "address",
                 "indexed": true,
                 "internalType": "address"
@@ -1194,6 +1086,11 @@
     },
     {
         "type": "error",
+        "name": "AlreadyLiquidated",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "AssetMismatch",
         "inputs": []
     },
@@ -1204,12 +1101,22 @@
     },
     {
         "type": "error",
+        "name": "CallerNotAdmin",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "CallerNotCollateralVault",
         "inputs": []
     },
     {
         "type": "error",
         "name": "CallerNotOwnerOrCollateralVaultFactory",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "CallerNotOwnerOrPauseGuardian",
         "inputs": []
     },
     {
@@ -1225,6 +1132,11 @@
     {
         "type": "error",
         "name": "EVC_InvalidAddress",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "E_EmptyError",
         "inputs": []
     },
     {
@@ -1281,11 +1193,6 @@
     {
         "type": "error",
         "name": "InvalidInitialization",
-        "inputs": []
-    },
-    {
-        "type": "error",
-        "name": "InvalidReserveIndex",
         "inputs": []
     },
     {
@@ -1386,6 +1293,11 @@
     },
     {
         "type": "error",
+        "name": "T_DeadlineExpired",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "T_DebtMoreThanMax",
         "inputs": []
     },
@@ -1401,6 +1313,11 @@
     },
     {
         "type": "error",
+        "name": "T_MorphoNotImplemented",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "T_OperationDisabled",
         "inputs": []
     },
@@ -1411,7 +1328,17 @@
     },
     {
         "type": "error",
+        "name": "T_SlippageCheckFailed",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "T_WithdrawMoreThanMax",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "UnitOfAccountMismatch",
         "inputs": []
     },
     {
@@ -1427,6 +1354,140 @@
     {
         "type": "error",
         "name": "ViolatorNotCollateralVault",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "ZeroAddress",
+        "inputs": []
+    },
+    {
+        "type": "constructor",
+        "inputs": [
+            {
+                "name": "_evc",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_aavePool",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_incentiveController",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "aToken",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "aaveDebtToken",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "categoryId",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "uint8",
+                "internalType": "uint8"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "claimRewards",
+        "inputs": [
+            {
+                "name": "assets",
+                "type": "address[]",
+                "internalType": "address[]"
+            }
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "initialize",
+        "inputs": [
+            {
+                "name": "__intermediateVault",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "__borrower",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "__liqLTV",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "__vaultManager",
+                "type": "address",
+                "internalType": "contract VaultManager"
+            },
+            {
+                "name": "__targetAsset",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "__categoryId",
+                "type": "uint8",
+                "internalType": "uint8"
+            }
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "underlyingAsset",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "error",
+        "name": "InvalidReserveIndex",
         "inputs": []
     }
 ]

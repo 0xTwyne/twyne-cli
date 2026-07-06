@@ -38,6 +38,19 @@
     },
     {
         "type": "function",
+        "name": "admin",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
         "name": "categoryId",
         "inputs": [
             {
@@ -110,13 +123,8 @@
     },
     {
         "type": "function",
-        "name": "createCollateralVault",
+        "name": "createAaveV3CollateralVault",
         "inputs": [
-            {
-                "name": "_vaultType",
-                "type": "uint8",
-                "internalType": "enum VaultType"
-            },
             {
                 "name": "_intermediateVault",
                 "type": "address",
@@ -136,6 +144,96 @@
                 "name": "_targetAsset",
                 "type": "address",
                 "internalType": "address"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "vault",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "createEulerCollateralVault",
+        "inputs": [
+            {
+                "name": "_intermediateVault",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_targetVault",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_liqLTV",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "vault",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "createMorphoCollateralVault",
+        "inputs": [
+            {
+                "name": "_intermediateVault",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_targetVault",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_marketParams",
+                "type": "tuple",
+                "internalType": "struct MarketParams",
+                "components": [
+                    {
+                        "name": "loanToken",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "collateralToken",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "oracle",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "irm",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "lltv",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    }
+                ]
+            },
+            {
+                "name": "_liqLTV",
+                "type": "uint256",
+                "internalType": "uint256"
             }
         ],
         "outputs": [
@@ -252,13 +350,13 @@
     },
     {
         "type": "function",
-        "name": "paused",
+        "name": "pauseState",
         "inputs": [],
         "outputs": [
             {
                 "name": "",
-                "type": "bool",
-                "internalType": "bool"
+                "type": "uint8",
+                "internalType": "enum PauseState"
             }
         ],
         "stateMutability": "view"
@@ -285,21 +383,14 @@
     },
     {
         "type": "function",
-        "name": "setPauseGuardian",
+        "name": "setAdmin",
         "inputs": [
             {
-                "name": "_pauseGuardian",
+                "name": "_admin",
                 "type": "address",
                 "internalType": "address"
             }
         ],
-        "outputs": [],
-        "stateMutability": "nonpayable"
-    },
-    {
-        "type": "function",
-        "name": "unpause",
-        "inputs": [],
         "outputs": [],
         "stateMutability": "nonpayable"
     },
@@ -357,6 +448,32 @@
                 "name": "liquidator",
                 "type": "address",
                 "internalType": "address"
+            }
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "setPauseGuardian",
+        "inputs": [
+            {
+                "name": "_pauseGuardian",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "setPauseState",
+        "inputs": [
+            {
+                "name": "newState",
+                "type": "uint8",
+                "internalType": "enum PauseState"
             }
         ],
         "outputs": [],
@@ -459,19 +576,6 @@
                 "name": "newOwner",
                 "type": "address",
                 "indexed": true,
-                "internalType": "address"
-            }
-        ],
-        "anonymous": false
-    },
-    {
-        "type": "event",
-        "name": "Paused",
-        "inputs": [
-            {
-                "name": "account",
-                "type": "address",
-                "indexed": false,
                 "internalType": "address"
             }
         ],
@@ -649,19 +753,6 @@
     },
     {
         "type": "event",
-        "name": "T_FactoryPause",
-        "inputs": [
-            {
-                "name": "pause",
-                "type": "bool",
-                "indexed": false,
-                "internalType": "bool"
-            }
-        ],
-        "anonymous": false
-    },
-    {
-        "type": "event",
         "name": "T_HandleExternalLiquidation",
         "inputs": [],
         "anonymous": false
@@ -694,6 +785,19 @@
     },
     {
         "type": "event",
+        "name": "T_PauseStateChanged",
+        "inputs": [
+            {
+                "name": "newState",
+                "type": "uint8",
+                "indexed": false,
+                "internalType": "uint8"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "event",
         "name": "T_Rebalance",
         "inputs": [],
         "anonymous": false
@@ -719,22 +823,10 @@
     },
     {
         "type": "event",
-        "name": "T_RemoveAllowedTargetVault",
+        "name": "T_Repay",
         "inputs": [
             {
-                "name": "intermediateVault",
-                "type": "address",
-                "indexed": true,
-                "internalType": "address"
-            },
-            {
-                "name": "targetVault",
-                "type": "address",
-                "indexed": true,
-                "internalType": "address"
-            },
-            {
-                "name": "index",
+                "name": "repayAmount",
                 "type": "uint256",
                 "indexed": false,
                 "internalType": "uint256"
@@ -744,13 +836,44 @@
     },
     {
         "type": "event",
-        "name": "T_Repay",
+        "name": "T_SetAdmin",
         "inputs": [
             {
-                "name": "repayAmount",
-                "type": "uint256",
+                "name": "admin",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "event",
+        "name": "T_SetAllowedMorphoMarket",
+        "inputs": [
+            {
+                "name": "targetVault",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "intermediateVault",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "marketId",
+                "type": "bytes32",
+                "indexed": true,
+                "internalType": "bytes32"
+            },
+            {
+                "name": "set",
+                "type": "bool",
                 "indexed": false,
-                "internalType": "uint256"
+                "internalType": "bool"
             }
         ],
         "anonymous": false
@@ -811,7 +934,7 @@
         "name": "T_SetExternalLiqBuffer",
         "inputs": [
             {
-                "name": "intermediateVault",
+                "name": "collateralAddress",
                 "type": "address",
                 "indexed": true,
                 "internalType": "address"
@@ -842,7 +965,7 @@
                 "internalType": "address"
             },
             {
-                "name": "allowed",
+                "name": "value",
                 "type": "bool",
                 "indexed": false,
                 "internalType": "bool"
@@ -892,7 +1015,7 @@
         "name": "T_SetMaxLiqLTV",
         "inputs": [
             {
-                "name": "intermediateVault",
+                "name": "collateralAddress",
                 "type": "address",
                 "indexed": true,
                 "internalType": "address"
@@ -912,39 +1035,7 @@
         ],
         "anonymous": false
     },
-    {
-        "type": "event",
-        "name": "T_SetPauseGuardian",
-        "inputs": [
-            {
-                "name": "pauseGuardian",
-                "type": "address",
-                "indexed": true,
-                "internalType": "address"
-            }
-        ],
-        "anonymous": false
-    },
-    {
-        "type": "event",
-        "name": "T_SetOracleResolvedVault",
-        "inputs": [
-            {
-                "name": "collateralAddress",
-                "type": "address",
-                "indexed": true,
-                "internalType": "address"
-            },
-            {
-                "name": "allow",
-                "type": "bool",
-                "indexed": false,
-                "internalType": "bool"
-            }
-        ],
-        "anonymous": false
-    },
-    {
+{
         "type": "event",
         "name": "T_SetOracleResolvedVault",
         "inputs": [
@@ -975,6 +1066,19 @@
         "inputs": [
             {
                 "name": "newOracleRouter",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "event",
+        "name": "T_SetPauseGuardian",
+        "inputs": [
+            {
+                "name": "pauseGuardian",
                 "type": "address",
                 "indexed": true,
                 "internalType": "address"
@@ -1061,19 +1165,6 @@
     },
     {
         "type": "event",
-        "name": "Unpaused",
-        "inputs": [
-            {
-                "name": "account",
-                "type": "address",
-                "indexed": false,
-                "internalType": "address"
-            }
-        ],
-        "anonymous": false
-    },
-    {
-        "type": "event",
         "name": "Upgraded",
         "inputs": [
             {
@@ -1098,6 +1189,11 @@
     },
     {
         "type": "error",
+        "name": "AlreadyLiquidated",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "AssetMismatch",
         "inputs": []
     },
@@ -1108,17 +1204,22 @@
     },
     {
         "type": "error",
+        "name": "CallerNotAdmin",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "CallerNotCollateralVault",
         "inputs": []
     },
     {
         "type": "error",
-        "name": "CallerNotOwnerOrPauseGuardian",
+        "name": "CallerNotOwnerOrCollateralVaultFactory",
         "inputs": []
     },
     {
         "type": "error",
-        "name": "CallerNotOwnerOrCollateralVaultFactory",
+        "name": "CallerNotOwnerOrPauseGuardian",
         "inputs": []
     },
     {
@@ -1155,11 +1256,6 @@
     {
         "type": "error",
         "name": "EnforcedPause",
-        "inputs": []
-    },
-    {
-        "type": "error",
-        "name": "ExpectedPause",
         "inputs": []
     },
     {
@@ -1306,6 +1402,11 @@
     },
     {
         "type": "error",
+        "name": "T_DeadlineExpired",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "T_DebtMoreThanMax",
         "inputs": []
     },
@@ -1321,12 +1422,22 @@
     },
     {
         "type": "error",
+        "name": "T_MorphoNotImplemented",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "T_OperationDisabled",
         "inputs": []
     },
     {
         "type": "error",
         "name": "T_QuoteNotUSD",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "T_SlippageCheckFailed",
         "inputs": []
     },
     {
@@ -1352,6 +1463,11 @@
     },
     {
         "type": "error",
+        "name": "UnitOfAccountMismatch",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "ValueOutOfRange",
         "inputs": []
     },
@@ -1363,6 +1479,11 @@
     {
         "type": "error",
         "name": "ViolatorNotCollateralVault",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "ZeroAddress",
         "inputs": []
     }
 ]

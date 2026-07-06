@@ -529,17 +529,12 @@ def _set_ltv_via_evc(sender_account, cv_address, ltv):
 # Vault creation helper (low-level raw-RPC fixture for test setup)
 # ---------------------------------------------------------------------------
 
-# v1.0.5 factory signature:
-#   createCollateralVault(uint8 _vaultType, address _intermediateVault,
-#                         address _targetVault, uint256 _liqLTV, address _targetAsset)
-# requires callThroughEVC (calls must go through EVC.batch()).
-#
-# Note: pre-v1.0.5 the 2nd arg was "asset" (eVault token) and the 5th was the
-# intermediate vault. v1.0.5 swapped these semantically (selector unchanged
-# because the type signature is identical). _targetAsset = ZERO_ADDRESS lets
-# the factory derive it from the target vault.
-
-_FACTORY_SELECTOR = bytes.fromhex("3c7269d1")  # createCollateralVault(uint8,address,address,uint256,address)
+# Factory typed create entrypoints:
+#   createEulerCollateralVault(address _intermediateVault, address _targetVault, uint256 _liqLTV)
+#   createAaveV3CollateralVault(address _intermediateVault, address _targetVault, uint256 _liqLTV, address _targetAsset)
+# Both require callThroughEVC (calls must go through EVC.batch()).
+_EULER_CREATE_SELECTOR = bytes.fromhex("e6cfeae4")   # createEulerCollateralVault(address,address,uint256)
+_AAVE_CREATE_SELECTOR = bytes.fromhex("4f094ba4")    # createAaveV3CollateralVault(address,address,uint256,address)
 _EVC_CALL_SELECTOR = bytes.fromhex("1f8b5215")  # call(address,address,uint256,bytes)
 # T_CollateralVaultCreated(address indexed vault) — stored without 0x prefix
 # to avoid secret-pattern false positive (keccak hash is 32 bytes = 64 hex chars)
@@ -554,14 +549,14 @@ def _create_vault_via_evc(
     liq_ltv=DEFAULT_LIQ_LTV,
     target_asset=ZERO_ADDRESS,
 ):
-    """Create a collateral vault via EVC.batch() with the v1.0.5 factory signature.
+    """Create a collateral vault via EVC.batch() using the typed create entrypoint.
 
     Args:
-        vault_type: 0 = Euler, 1 = Aave V3
+        vault_type: 0 = Euler (createEulerCollateralVault), 1 = Aave V3 (createAaveV3CollateralVault)
         intermediate_vault: Twyne intermediate vault (CreditEVault) address
         target_vault: Must be an allowed target vault in VaultManager
         liq_ltv: Liquidation LTV in basis points (e.g. 9000 = 90%)
-        target_asset: Debt asset; ZERO_ADDRESS lets the factory derive from target_vault
+        target_asset: Debt asset (Aave only); ignored for Euler
 
     Returns the new vault address as a string.
     """
@@ -569,11 +564,19 @@ def _create_vault_via_evc(
 
     caller = str(sender_account.address)
 
-    # Encode factory calldata (v1.0.5 arg order)
-    factory_calldata = _FACTORY_SELECTOR + abi_encode(
-        ["uint8", "address", "address", "uint256", "address"],
-        [vault_type, intermediate_vault, target_vault, liq_ltv, target_asset],
-    )
+    # Encode factory calldata using the typed create entrypoint for vault_type.
+    # Euler V2 (0): createEulerCollateralVault(iv, target, liqLTV)
+    # Aave V3 (1): createAaveV3CollateralVault(iv, target, liqLTV, targetAsset)
+    if vault_type == 0:
+        factory_calldata = _EULER_CREATE_SELECTOR + abi_encode(
+            ["address", "address", "uint256"],
+            [intermediate_vault, target_vault, liq_ltv],
+        )
+    else:
+        factory_calldata = _AAVE_CREATE_SELECTOR + abi_encode(
+            ["address", "address", "uint256", "address"],
+            [intermediate_vault, target_vault, liq_ltv, target_asset],
+        )
 
     # Factory has _callThroughEVC modifier — must call via EVC.batch(), not directly.
     # Direct calls fail with EVC_EmptyError (0x38ae747c) because EVC can't

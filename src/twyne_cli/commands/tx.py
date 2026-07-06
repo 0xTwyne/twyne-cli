@@ -1443,16 +1443,17 @@ def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
 
-        # v1.0.5: factory.createCollateralVault takes the IV address directly as
-        # _intermediateVault (verified via vaultManager.isIntermediateVault). Pre-v1.0.5
-        # this slot held the eVault share token / aTokenWrapper, hence the resolve helpers
-        # in contracts.py — no longer needed in this path.
+        # The factory's typed create entrypoints (createEulerCollateralVault /
+        # createAaveV3CollateralVault) take the IV address directly as
+        # _intermediateVault (verified via vaultManager.isIntermediateVault).
         fct = collateral_vault_factory()
         target_asset = target_asset or ZERO_ADDRESS
 
-        args = [vault_type, intermediate_vault, target_vault, ltv, target_asset]
+        create_fn, args = _create_vault_call(
+            vault_type, intermediate_vault, target_vault, ltv, target_asset,
+        )
 
-        sim = simulate_through_evc(fct, "createCollateralVault", args, sender=account)
+        sim = simulate_through_evc(fct, create_fn, args, sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
             _show_verbose_error(ctx, sim)
@@ -1480,7 +1481,7 @@ def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type
             return
 
         gas_kwargs = _build_gas_kwargs(**_)
-        receipt = execute_through_evc(fct, "createCollateralVault", args, account, **gas_kwargs)
+        receipt = execute_through_evc(fct, create_fn, args, account, **gas_kwargs)
         vault_address = _extract_vault_address_from_receipt(receipt, str(fct.address))
         if vault_address:
             click.echo(f"New vault address: {vault_address}")
@@ -1535,15 +1536,30 @@ def _derive_borrow_token(target_vault: str, target_asset: str | None, vault_type
     return str(credit_vault(target_vault).asset())
 
 
+def _create_vault_call(
+    vault_type: int, intermediate_vault: str, target_vault: str, ltv: int,
+    target_asset: str | None = None,
+) -> tuple[str, list]:
+    """Return ``(function_name, args)`` for the factory's typed create entrypoint.
+
+    Picks ``createEulerCollateralVault`` (Euler V2) or
+    ``createAaveV3CollateralVault`` (Aave V3, which additionally takes the target
+    asset) based on ``vault_type``.
+    """
+    if vault_type == EULER_V2:
+        return "createEulerCollateralVault", [intermediate_vault, target_vault, ltv]
+    return "createAaveV3CollateralVault", [intermediate_vault, target_vault, ltv, target_asset]
+
+
 def _build_open_position_batch(
-    factory, create_args: list, predicted_address: str,
+    factory, create_fn: str, create_args: list, predicted_address: str,
     raw_deposit: int, raw_borrow: int | None, sender: str,
 ) -> list[tuple]:
     """Build EVC batch items for create-vault + deposit + (optional) borrow."""
     items = []
 
     # Item 1: create vault
-    create_data = factory.createCollateralVault.encode_input(*create_args)
+    create_data = getattr(factory, create_fn).encode_input(*create_args)
     items.append((str(factory.address), sender, 0, create_data))
 
     # Item 2: deposit underlying
@@ -1597,8 +1613,10 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
         target_asset_addr = target_asset or ZERO_ADDRESS
 
         # 1. Predict vault address via simulation
-        create_args = [vault_type, intermediate_vault, target_vault, ltv, target_asset_addr]
-        sim = simulate_through_evc(fct, "createCollateralVault", create_args, sender=account)
+        create_fn, create_args = _create_vault_call(
+            vault_type, intermediate_vault, target_vault, ltv, target_asset_addr,
+        )
+        sim = simulate_through_evc(fct, create_fn, create_args, sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
             _show_verbose_error(ctx, sim)
@@ -1674,7 +1692,7 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
 
         # 7. Build and simulate full batch (approval now in place)
         batch_items = _build_open_position_batch(
-            fct, create_args, predicted_address,
+            fct, create_fn, create_args, predicted_address,
             raw_deposit, raw_borrow, str(account.address),
         )
         evc_instance = evc_contract()
@@ -1978,11 +1996,10 @@ def _migrate_euler(ctx, position, ltv, account, dry_run, skip_confirm, **gas_ext
 
     # Derive target vault (the debt eVault is the target vault for Euler)
     target_vault = position.debt_address
-    target_asset = "0x0000000000000000000000000000000000000000"
-
-    # 1. Simulate createCollateralVault to predict CV address
-    create_args = [EULER_V2, factory_vault, target_vault, ltv, target_asset]
-    sim = simulate_through_evc(fct, "createCollateralVault", create_args, sender=account)
+    # 1. Simulate the typed create entrypoint to predict CV address.
+    # Euler V2 → createEulerCollateralVault (no target-asset arg).
+    create_fn, create_args = _create_vault_call(EULER_V2, factory_vault, target_vault, ltv)
+    sim = simulate_through_evc(fct, create_fn, create_args, sender=account)
     if not sim["success"]:
         click.echo(f"Create vault simulation failed: {sim['error']}", err=True)
         _show_verbose_error(ctx, sim)
@@ -2008,7 +2025,7 @@ def _migrate_euler(ctx, position, ltv, account, dry_run, skip_confirm, **gas_ext
     teleport_data = cv.teleport.encode_input(
         position.collateral_amount, uint256_max, position.sub_account_id,
     )
-    create_data = fct.createCollateralVault.encode_input(*create_args)
+    create_data = getattr(fct, create_fn).encode_input(*create_args)
 
     batch_items = [
         (str(fct.address), sender, 0, create_data),
@@ -2072,9 +2089,10 @@ def _migrate_aave(ctx, position, ltv, account, dry_run, skip_confirm, **gas_extr
     target_vault = AAVE_V3_POOL
     target_asset = position.debt_address  # WETH
 
-    # 1. Simulate createCollateralVault to predict CV address
-    create_args = [AAVE_V3, wrapper_addr, target_vault, ltv, target_asset]
-    sim = simulate_through_evc(fct, "createCollateralVault", create_args, sender=account)
+    # 1. Simulate the typed create entrypoint to predict CV address.
+    # Aave V3 → createAaveV3CollateralVault (includes target asset).
+    create_fn, create_args = _create_vault_call(AAVE_V3, wrapper_addr, target_vault, ltv, target_asset)
+    sim = simulate_through_evc(fct, create_fn, create_args, sender=account)
     if not sim["success"]:
         click.echo(f"Create vault simulation failed: {sim['error']}", err=True)
         _show_verbose_error(ctx, sim)
@@ -2100,8 +2118,7 @@ def _migrate_aave(ctx, position, ltv, account, dry_run, skip_confirm, **gas_extr
     evc_instance = evc_contract()
     evc_addr = str(evc_instance.address)
     zero_addr = "0x0000000000000000000000000000000000000000"
-
-    create_data = fct.createCollateralVault.encode_input(*create_args)
+    create_data = getattr(fct, create_fn).encode_input(*create_args)
 
     # onBehalfOfAccount must be address(0) when targeting the EVC itself
     enable_op_data = evc_instance.setAccountOperator.encode_input(sender, op_addr, True)
@@ -2142,8 +2159,7 @@ def _migrate_aave(ctx, position, ltv, account, dry_run, skip_confirm, **gas_extr
         # the factory arguments.
         click.echo("\nDry run — createCV simulation passed.")
         click.echo("Batch items (4):")
-        click.echo("  1. createCollateralVault (validated)")
-        click.echo("  2. setAccountOperator(enable)")
+        click.echo("  1. createAaveV3CollateralVault (validated)")
         click.echo("  3. executeTeleport")
         click.echo("  4. setAccountOperator(disable)")
         for label, value in details:
