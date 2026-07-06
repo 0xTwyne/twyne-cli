@@ -127,6 +127,12 @@ def intermediate_vaults() -> dict[str, str]:
     return addrs.get("intermediateVaults", {})
 
 
+def target_vaults() -> dict[str, str]:
+    """Return dict of target debt-vault name → address for the active chain."""
+    addrs = _load_addresses()
+    return addrs.get("targetVaults", {})
+
+
 def evc(address: str | None = None):
     """Get EVC contract instance (Twyne EVC by default)."""
     addr = address or get_address("evc")
