@@ -10,6 +10,7 @@ from ..contracts import (
     aave_v3_pool,
     credit_vault,
     intermediate_vaults,
+    target_vaults,
     vault_manager,
 )
 from ..formatting import (
@@ -171,18 +172,6 @@ def rates(ctx: TwyneContext, asset_or_iv_address: str):
             if not is_iv:
                 rate_data["collateral_asset"] = asset_or_iv_address
 
-            # Get target vault count for the IV
-            try:
-                tv_len = vm.targetVaultLength(iv_addr, block_identifier=block)
-                rate_data["target_vault_count"] = tv_len
-                targets = []
-                for i in range(tv_len):
-                    tv = vm.allowedTargetVaultList(iv_addr, i, block_identifier=block)
-                    targets.append(tv)
-                rate_data["allowed_target_vaults"] = targets
-            except Exception:
-                pass
-
         else:
             rate_data = {
                 "address": asset_or_iv_address,
@@ -274,18 +263,22 @@ def tvl(ctx: TwyneContext):
 
 
 def _fetch_euler_pairs(iv_name: str, iv_addr: str, vm, block) -> list[dict]:
-    """Fetch external LTV pairs for an Euler intermediate vault."""
+    """Fetch external LTV pairs for an Euler intermediate vault.
+
+    Target debt vaults are sourced from the chain's ``targetVaults`` address
+    registry. Per-pair external LTVs are read directly from each target EVault.
+    """
     iv = credit_vault(iv_addr)
     collateral = str(iv.asset(block_identifier=block))
 
-    tv_count = vm.targetVaultLength(iv_addr, block_identifier=block)
-    # v1.0.5+: keyed by IV address, not collateral asset
+    # maxTwyneLTVs/externalLiqBuffers are still keyed by IV address.
     max_twyne = vm.maxTwyneLTVs(iv_addr, block_identifier=block)
     beta_safe = vm.externalLiqBuffers(iv_addr, block_identifier=block)
 
     pairs: list[dict] = []
-    for i in range(tv_count):
-        tv_addr = str(vm.allowedTargetVaultList(iv_addr, i, block_identifier=block))
+    for tv_name, tv_addr in target_vaults().items():
+        if not tv_name.startswith("euler_"):
+            continue  # aave_pool etc. are not Euler target EVaults
         tv = credit_vault(tv_addr)
 
         liq_ltv = tv.LTVLiquidation(collateral, block_identifier=block)

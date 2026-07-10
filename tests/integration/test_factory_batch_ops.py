@@ -48,11 +48,12 @@ from .conftest import (
 
 
 class TestFactoryCreateVault:
-    """Tests for CollateralVaultFactory.createCollateralVault().
+    """Tests for CollateralVaultFactory's typed create entrypoints.
 
-    The factory ABI uses 5 args: vaultType, intermediateVault, targetVault,
-    liqLTV, targetAsset. The callThroughEVC modifier requires real transactions
-    to go through EVC.batch(), but eth_call (simulation) bypasses this.
+    The factory exposes createEulerCollateralVault(iv, target, liqLTV) and
+    createAaveV3CollateralVault(iv, target, liqLTV, targetAsset). The
+    callThroughEVC modifier requires real transactions to go through EVC.batch(),
+    but eth_call (simulation) bypasses this.
     """
 
     def test_create_vault_via_evc_succeeds(self, test_account, ape_provider):
@@ -67,23 +68,23 @@ class TestFactoryCreateVault:
         assert str(factory.address).lower() == CV_FACTORY.lower()
 
     def test_cli_factory_create_vault_execution(self, test_account, ape_provider):
-        """Factory.createCollateralVault() routed through Twyne EVC succeeds.
+        """Factory.createEulerCollateralVault() routed through Twyne EVC succeeds.
 
         The factory's callThroughEVC modifier requires msg.sender == EVC.
         Direct calls fail with EVC_EmptyError. This routes through evc.call()
         matching the CLI's execute_through_evc() pattern.
         """
         factory = collateral_vault_factory()
-        args = [0, EULER_EWETH_IV, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, ZERO_ADDRESS]
-        receipt = execute_through_evc(factory, "createCollateralVault", args, test_account)
+        args = [EULER_EWETH_IV, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV]
+        receipt = execute_through_evc(factory, "createEulerCollateralVault", args, test_account)
         assert receipt.status == 1
 
     def test_cli_factory_simulation_succeeds(self, test_account, ape_provider):
         """simulate_tx with v1.0.5 ABI succeeds (eth_call bypasses callThroughEVC)."""
         factory = collateral_vault_factory()
         sim = simulate_tx(
-            factory, "createCollateralVault",
-            [0, EULER_EWETH_IV, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, ZERO_ADDRESS],
+            factory, "createEulerCollateralVault",
+            [EULER_EWETH_IV, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV],
             sender=test_account,
         )
         assert sim["success"] is True
@@ -107,8 +108,8 @@ class TestSimulateThroughEVC:
     def test_euler_vault_creation_succeeds(self, test_account, ape_provider):
         """Euler vault creation simulation via EVC routing succeeds."""
         factory = collateral_vault_factory()
-        args = [0, EULER_EWETH_IV, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, ZERO_ADDRESS]
-        sim = simulate_through_evc(factory, "createCollateralVault", args, sender=test_account)
+        args = [EULER_EWETH_IV, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV]
+        sim = simulate_through_evc(factory, "createEulerCollateralVault", args, sender=test_account)
         assert sim["success"] is True
         assert sim["result"]  # Returns encoded result (predicted vault address)
 
@@ -119,8 +120,8 @@ class TestSimulateThroughEVC:
         have allowedTargetAssets configured (done in vault_manager_configured).
         """
         factory = collateral_vault_factory()
-        args = [1, AAVE_AWSTETH_IV, AAVE_V3_POOL, MAX_AAVE_LTV, WETH]
-        sim = simulate_through_evc(factory, "createCollateralVault", args, sender=test_account)
+        args = [AAVE_AWSTETH_IV, AAVE_V3_POOL, MAX_AAVE_LTV, WETH]
+        sim = simulate_through_evc(factory, "createAaveV3CollateralVault", args, sender=test_account)
         assert sim["success"] is True
         assert sim["result"]  # Returns encoded result (predicted vault address)
 
@@ -128,16 +129,16 @@ class TestSimulateThroughEVC:
         """Passing a non-IV address (collateral token) returns failure, not crash."""
         factory = collateral_vault_factory()
         # EULER_EWETH is a collateral token, NOT an intermediate vault
-        args = [0, EULER_EWETH, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, ZERO_ADDRESS]
-        sim = simulate_through_evc(factory, "createCollateralVault", args, sender=test_account)
+        args = [EULER_EWETH, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV]
+        sim = simulate_through_evc(factory, "createEulerCollateralVault", args, sender=test_account)
         assert sim["success"] is False
         assert sim["error"]  # Has a meaningful error message
 
     def test_aave_missing_target_asset_fails(self, test_account, ape_provider):
         """Aave vault creation with zero target asset fails via EVC simulation."""
         factory = collateral_vault_factory()
-        args = [1, AAVE_AWSTETH_IV, AAVE_V3_POOL, MAX_AAVE_LTV, ZERO_ADDRESS]
-        sim = simulate_through_evc(factory, "createCollateralVault", args, sender=test_account)
+        args = [AAVE_AWSTETH_IV, AAVE_V3_POOL, MAX_AAVE_LTV, ZERO_ADDRESS]
+        sim = simulate_through_evc(factory, "createAaveV3CollateralVault", args, sender=test_account)
         assert sim["success"] is False
         assert sim["error"]
 
@@ -145,8 +146,8 @@ class TestSimulateThroughEVC:
         """Aave vault creation with non-whitelisted target asset fails."""
         factory = collateral_vault_factory()
         # Use EULER_EWETH as target asset — not a whitelisted target for Aave
-        args = [1, AAVE_AWSTETH_IV, AAVE_V3_POOL, MAX_AAVE_LTV, EULER_EWETH]
-        sim = simulate_through_evc(factory, "createCollateralVault", args, sender=test_account)
+        args = [AAVE_AWSTETH_IV, AAVE_V3_POOL, MAX_AAVE_LTV, EULER_EWETH]
+        sim = simulate_through_evc(factory, "createAaveV3CollateralVault", args, sender=test_account)
         assert sim["success"] is False
         assert sim["error"]
 
