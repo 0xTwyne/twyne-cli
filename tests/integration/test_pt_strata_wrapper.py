@@ -9,7 +9,7 @@ Tenderly fork RPC: chain ID 9991 (all accounts unlocked)
 """
 
 import httpx
-from eth_abi import encode as abi_encode, decode as abi_decode
+from eth_abi import encode as abi_encode
 
 # ---------------------------------------------------------------------------
 # Config
@@ -160,7 +160,7 @@ def run_tests():
     print("PT-Strata aToken Wrapper — Integration Tests")
     print(f"Wrapper: {WRAPPER}")
     print(f"PT Token: {PT_TOKEN}")
-    print(f"RPC: Tenderly fork (chain 9991)")
+    print("RPC: Tenderly fork (chain 9991)")
     print("=" * 70)
 
     passed = 0
@@ -203,13 +203,13 @@ def run_tests():
     # 1b. Approve + Deposit
     approve(PT_TOKEN, ALICE, WRAPPER, HUNDRED_TOKENS)
     alice_allowance = allowance(PT_TOKEN, ALICE, WRAPPER)
-    log(f"Alice approved wrapper", f"allowance={alice_allowance / 10**18:.0f}")
+    log("Alice approved wrapper", f"allowance={alice_allowance / 10**18:.0f}")
 
     receipt = deposit(WRAPPER, TEN_TOKENS, ALICE, ALICE)
     if receipt["status"] == "0x1":
         wrapper_bal = balance_of(WRAPPER, ALICE)
         pt_bal_after = balance_of(PT_TOKEN, ALICE)
-        log(f"deposit 10 PT", f"wrapper shares={wrapper_bal / 10**18:.4f}, PT remaining={pt_bal_after / 10**18:.2f}")
+        log("deposit 10 PT", f"wrapper shares={wrapper_bal / 10**18:.4f}, PT remaining={pt_bal_after / 10**18:.2f}")
         passed += 1
     else:
         log("deposit 10 PT", "FAIL")
@@ -219,7 +219,7 @@ def run_tests():
     receipt = deposit(WRAPPER, TEN_TOKENS, BOB, ALICE)
     if receipt["status"] == "0x1":
         bob_wrapper_bal = balance_of(WRAPPER, BOB)
-        log(f"deposit 10 PT to Bob", f"Bob wrapper shares={bob_wrapper_bal / 10**18:.4f}")
+        log("deposit 10 PT to Bob", f"Bob wrapper shares={bob_wrapper_bal / 10**18:.4f}")
         passed += 1
     else:
         log("deposit 10 PT to Bob", "FAIL")
@@ -241,7 +241,7 @@ def run_tests():
     if receipt["status"] == "0x1":
         alice_wrapper_after = balance_of(WRAPPER, ALICE)
         delta = alice_wrapper_after - alice_wrapper_before
-        log(f"mint 5 shares", f"shares delta={delta / 10**18:.4f}")
+        log("mint 5 shares", f"shares delta={delta / 10**18:.4f}")
         passed += 1
     else:
         log("mint 5 shares", "FAIL")
@@ -259,7 +259,7 @@ def run_tests():
         alice_pt_after = balance_of(PT_TOKEN, ALICE)
         alice_wrapper_after = balance_of(WRAPPER, ALICE)
         log(
-            f"withdraw 5 PT",
+            "withdraw 5 PT",
             f"PT received={( alice_pt_after - alice_pt_before) / 10**18:.4f}, "
             f"shares burned={( alice_wrapper_before - alice_wrapper_after) / 10**18:.4f}",
         )
@@ -273,7 +273,7 @@ def run_tests():
     receipt = withdraw(WRAPPER, 2 * ONE_TOKEN, BOB, ALICE, ALICE)
     if receipt["status"] == "0x1":
         bob_pt_after = balance_of(PT_TOKEN, BOB)
-        log(f"withdraw 2 PT to Bob", f"Bob PT delta={( bob_pt_after - bob_pt_before) / 10**18:.4f}")
+        log("withdraw 2 PT to Bob", f"Bob PT delta={( bob_pt_after - bob_pt_before) / 10**18:.4f}")
         passed += 1
     else:
         log("withdraw 2 PT to Bob", "FAIL")
@@ -319,7 +319,7 @@ def run_tests():
         receipt = redeem(WRAPPER, bob_wrapper_bal // 2, BOB, BOB, BOB)
         if receipt["status"] == "0x1":
             bob_pt_after = balance_of(PT_TOKEN, BOB)
-            log(f"Bob redeems half shares", f"PT received={( bob_pt_after - bob_pt_before) / 10**18:.4f}")
+            log("Bob redeems half shares", f"PT received={( bob_pt_after - bob_pt_before) / 10**18:.4f}")
             passed += 1
         else:
             log("Bob redeems half shares", "FAIL")
@@ -364,7 +364,7 @@ def run_tests():
     if bob_wrapper_bal > 0:
         approve(WRAPPER, BOB, ALICE, bob_wrapper_bal)
         bob_alice_allowance = allowance(WRAPPER, BOB, ALICE)
-        log(f"Bob approves Alice", f"allowance={bob_alice_allowance / 10**18:.4f}")
+        log("Bob approves Alice", f"allowance={bob_alice_allowance / 10**18:.4f}")
 
         # Alice calls transferFrom (Bob → Alice)
         xfer_amount = bob_wrapper_bal // 3
@@ -411,7 +411,7 @@ def run_tests():
         receipt = redeem(WRAPPER, ONE_TOKEN, BOB, ALICE, BOB)
         if receipt["status"] == "0x1":
             bob_pt_after = balance_of(PT_TOKEN, BOB)
-            log(f"Bob redeems Alice's shares", f"Bob PT delta={( bob_pt_after - bob_pt_before) / 10**18:.4f}")
+            log("Bob redeems Alice's shares", f"Bob PT delta={( bob_pt_after - bob_pt_before) / 10**18:.4f}")
             passed += 1
         else:
             log("Bob redeems Alice's shares", "FAIL")
@@ -422,7 +422,7 @@ def run_tests():
         receipt = withdraw(WRAPPER, ONE_TOKEN, BOB, ALICE, BOB)
         if receipt["status"] == "0x1":
             bob_pt_after = balance_of(PT_TOKEN, BOB)
-            log(f"Bob withdraws on behalf of Alice", f"Bob PT delta={( bob_pt_after - bob_pt_before) / 10**18:.4f}")
+            log("Bob withdraws on behalf of Alice", f"Bob PT delta={( bob_pt_after - bob_pt_before) / 10**18:.4f}")
             passed += 1
         else:
             log("Bob withdraws on behalf of Alice", "FAIL")
