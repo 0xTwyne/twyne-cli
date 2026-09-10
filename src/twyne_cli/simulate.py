@@ -34,10 +34,10 @@ HF_INFINITE = 10**24  # positionStats returns ~uint256.max for zero-debt; clamp 
 
 _ABI_DIR = Path(__file__).parent / "abis"
 
-# HealthStatViewer (v1.0.5+) — source of truth: tech-notes
+# HealthStatViewer for contracts 1.0.7 (DEV-660) — source of truth: tech-notes
 # public-launch-addresses/TwyneAddresses_current_1.json
 DEFAULT_HSV = {
-    1: "0x5A919b9A77ee391AB48208A93e0684c24F99B07a",
+    1: "0xf88A9f96fa0798Ed322CD0e60435e4F111059DEf",
 }
 
 # Foundry may install under ~/.config/.foundry or ~/.foundry depending on env.
