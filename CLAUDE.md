@@ -278,7 +278,7 @@ CLI (Click via Ape)
 
 | Contract | Address | Purpose |
 |----------|---------|---------|
-| HealthStatViewer | `0x0dd9065c998E75657BcE6C3a11d7F5AbA5CBdbD4` | Health factor queries |
+| HealthStatViewer | `0xf88A9f96fa0798Ed322CD0e60435e4F111059DEf` | Health factor queries (contracts 1.0.7 lens, DEV-660) |
 | VaultManager | `0x0acd3A3c8Ab6a5F7b5A594C88DFa28999dA858aC` | Protocol parameters |
 | CollateralVaultFactory | `0xa1517cCe0bE75700A8838EA1cEE0dc383cd3A332` | Vault enumeration + creation |
 | Twyne EVC | `0xef39D6493884C4C84D38a4bFF879Ce16CEdE702a` | EVC for vault operations |
