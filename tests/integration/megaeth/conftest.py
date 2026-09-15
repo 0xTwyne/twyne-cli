@@ -252,7 +252,7 @@ def _configure_aave_vm_megaeth():
 # Vault creation — Aave path (v1.0.5 arg order)
 # ---------------------------------------------------------------------------
 
-_FACTORY_SELECTOR = bytes.fromhex("3c7269d1")  # createCollateralVault(uint8,address,address,uint256,address)
+_AAVE_CREATE_SELECTOR = bytes.fromhex("4f094ba4")  # createAaveV3CollateralVault(address,address,uint256,address)
 _EVC_BATCH_SELECTOR = bytes.fromhex("c16ae7a4")  # batch((address,address,uint256,bytes)[])
 # T_CollateralVaultCreated(address indexed vault) — keccak topic, hex stored without
 # 0x prefix to dodge the secret-pattern false positive (32-byte hex == 64 chars).
@@ -268,14 +268,14 @@ def _create_aave_vault_via_evc(
 ):
     """Create an Aave-type collateral vault on MegaETH via EVC.batch().
 
-    Uses the v1.0.5 arg order: (vaultType=1, intermediateVault, targetVault,
-    liqLTV, targetAsset). Returns the new vault address.
+    Uses the typed createAaveV3CollateralVault(intermediateVault, targetVault,
+    liqLTV, targetAsset) entrypoint. Returns the new vault address.
     """
     from eth_abi import encode as abi_encode
 
-    factory_calldata = _FACTORY_SELECTOR + abi_encode(
-        ["uint8", "address", "address", "uint256", "address"],
-        [1, intermediate_vault, target_vault, liq_ltv, target_asset],
+    factory_calldata = _AAVE_CREATE_SELECTOR + abi_encode(
+        ["address", "address", "uint256", "address"],
+        [intermediate_vault, target_vault, liq_ltv, target_asset],
     )
     batch_item = (COLLATERAL_VAULT_FACTORY, sender_addr, 0, factory_calldata)
     batch_calldata = _EVC_BATCH_SELECTOR + abi_encode(

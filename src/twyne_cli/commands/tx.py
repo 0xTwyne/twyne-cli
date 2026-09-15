@@ -10,6 +10,7 @@ from ..context import TwyneContext, pass_ctx
 from ..contracts import (
     aave_atoken_wrapper,
     aave_wrapper,
+    asset_zap,
     collateral_vault,
     collateral_vault_factory,
     credit_vault,
@@ -21,11 +22,13 @@ from ..contracts import (
     resolve_aave_factory_vault,
     resolve_euler_factory_vault,
     teleport_operator,
+    uses_pair_risk,
     vault_manager,
 )
 from ..contracts import (
     evc as evc_contract,
 )
+from ..deposits import underlying_deposit_items
 from ..discover import (
     AAVE_V3,
     EULER_V2,
@@ -287,24 +290,24 @@ def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key
 @click.argument("amount")
 @tx_options
 @pass_ctx
-def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval):
-    """Deposit underlying asset (e.g., raw ETH for a wstETH vault)."""
+def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **gas_extra):
+    """Deposit the underlying ERC20 token through AssetZap and skim."""
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
-        decimals = _get_token_decimals(cv)
+        receipt_token = str(cv.asset())
+        underlying_addr = str(credit_vault(receipt_token).asset())
+        decimals = int(erc20(underlying_addr).decimals())
         raw_amount = parse_amount(amount, decimals, raw=raw)
-
-        # Ensure token approval (underlying asset → vault)
-        underlying_addr = cv.underlyingAsset()
-        if not ensure_allowance(underlying_addr, vault_address, raw_amount, account,
-                                skip_confirm=skip_confirm, skip_approval=skip_approval,
-                                max_approve=max_approve):
+        batch_items = underlying_deposit_items(vault_address, receipt_token, raw_amount, str(account.address))
+        if not ensure_allowance(underlying_addr, str(asset_zap().address) if uses_pair_risk() else vault_address, raw_amount, account,
+                                skip_confirm=skip_confirm, skip_approval=skip_approval or dry_run,
+                                max_approve=max_approve, **_build_gas_kwargs(**gas_extra)):
             click.echo("Approval declined.")
             return
-
-        sim = simulate_tx(cv, "depositUnderlying", [raw_amount], sender=account)
+        evc_instance = evc_contract()
+        sim = simulate_tx(evc_instance, "batch", [batch_items], sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
             _show_verbose_error(ctx, sim)
@@ -324,7 +327,7 @@ def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, 
             click.echo("Cancelled.")
             return
 
-        receipt = execute_through_evc(cv, "depositUnderlying", [raw_amount], account)
+        receipt = _send_tx(evc_instance.batch, [batch_items], account, _build_gas_kwargs(**gas_extra))
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -428,7 +431,7 @@ def borrow(ctx: TwyneContext, vault_address, amount, receiver, account_alias, pr
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
-        decimals = _get_token_decimals(cv)
+        decimals = int(erc20(str(cv.targetAsset())).decimals())
         raw_amount = parse_amount(amount, decimals, raw=raw)
         recv = receiver or str(account.address)
 
@@ -453,7 +456,7 @@ def borrow(ctx: TwyneContext, vault_address, amount, receiver, account_alias, pr
             click.echo("Cancelled.")
             return
 
-        receipt = execute_through_evc(cv, "borrow", [raw_amount, recv], account)
+        receipt = execute_through_evc(cv, "borrow", [raw_amount, recv], account, **_build_gas_kwargs(**_))
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -464,13 +467,13 @@ def borrow(ctx: TwyneContext, vault_address, amount, receiver, account_alias, pr
 @click.argument("amount")
 @tx_options
 @pass_ctx
-def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval):
+def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
     """Repay borrowed amount to a collateral vault."""
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
-        decimals = _get_token_decimals(cv)
+        decimals = int(erc20(str(cv.targetAsset())).decimals())
         raw_amount = parse_amount(amount, decimals, raw=raw)
 
         # Ensure token approval (targetAsset → vault)
@@ -481,8 +484,8 @@ def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, 
         else:
             approval_amount = raw_amount
         if not ensure_allowance(target_addr, vault_address, approval_amount, account,
-                                skip_confirm=skip_confirm, skip_approval=skip_approval,
-                                max_approve=max_approve):
+                                skip_confirm=skip_confirm, skip_approval=skip_approval or dry_run,
+                                max_approve=max_approve, **_build_gas_kwargs(**_)):
             click.echo("Approval declined.")
             return
 
@@ -506,7 +509,7 @@ def repay(ctx: TwyneContext, vault_address, amount, account_alias, private_key, 
             click.echo("Cancelled.")
             return
 
-        receipt = execute_through_evc(cv, "repay", [raw_amount], account)
+        receipt = execute_through_evc(cv, "repay", [raw_amount], account, **_build_gas_kwargs(**_))
         display_receipt(receipt)
     finally:
         ctx.disconnect()
@@ -1328,10 +1331,10 @@ def close_position(ctx: TwyneContext, vault_address, slippage, protocol,
         # When liqLTV > extLiqLTV * buffer / MAXFACTOR, credit is reserved from the IV.
         # Lowering liqLTV to the minimum releases all credit, allowing full withdrawal.
         # Min liqLTV = ceil(extLiqLTV * buffer / MAXFACTOR)
-        # VaultManager maps externalLiqBuffers and maxTwyneLTVs by IV address (v1.0.5+).
+        # Read the buffer for this vault's debt asset.
         vm = vault_manager()
         iv_addr = str(cv.intermediateVault())
-        ext_liq_buffer = vm.externalLiqBuffers(iv_addr)
+        ext_liq_buffer = vm.liqParams(iv_addr, str(cv.targetAsset()))[0]
         target_evault = credit_vault(target_vault_addr)
         ext_liq_ltv = target_evault.LTVLiquidation(asset_addr)
         from ..constants import MAXFACTOR
@@ -1443,16 +1446,17 @@ def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
 
-        # v1.0.5: factory.createCollateralVault takes the IV address directly as
-        # _intermediateVault (verified via vaultManager.isIntermediateVault). Pre-v1.0.5
-        # this slot held the eVault share token / aTokenWrapper, hence the resolve helpers
-        # in contracts.py — no longer needed in this path.
+        # The factory's typed create entrypoints (createEulerCollateralVault /
+        # createAaveV3CollateralVault) take the IV address directly as
+        # _intermediateVault (verified via vaultManager.isIntermediateVault).
         fct = collateral_vault_factory()
         target_asset = target_asset or ZERO_ADDRESS
 
-        args = [vault_type, intermediate_vault, target_vault, ltv, target_asset]
+        create_fn, args = _create_vault_call(
+            vault_type, intermediate_vault, target_vault, ltv, target_asset,
+        )
 
-        sim = simulate_through_evc(fct, "createCollateralVault", args, sender=account)
+        sim = simulate_through_evc(fct, create_fn, args, sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
             _show_verbose_error(ctx, sim)
@@ -1480,7 +1484,7 @@ def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type
             return
 
         gas_kwargs = _build_gas_kwargs(**_)
-        receipt = execute_through_evc(fct, "createCollateralVault", args, account, **gas_kwargs)
+        receipt = execute_through_evc(fct, create_fn, args, account, **gas_kwargs)
         vault_address = _extract_vault_address_from_receipt(receipt, str(fct.address))
         if vault_address:
             click.echo(f"New vault address: {vault_address}")
@@ -1510,17 +1514,9 @@ def _extract_vault_address_from_receipt(receipt, factory_address: str) -> str | 
 
 
 def _derive_deposit_underlying(intermediate_vault: str, vault_type: int) -> str:
-    """Derive the underlying deposit token from the intermediate vault.
-
-    Euler: IV.asset() = eVault share token → eVault.asset() = raw underlying (e.g. wstETH).
-    Aave: IV.asset() = underlying token directly.
-    """
-    iv = credit_vault(intermediate_vault)
-    if vault_type == 0:  # Euler
-        evault_addr = iv.asset()
-        return str(credit_vault(str(evault_addr)).asset())
-    else:  # Aave
-        return str(iv.asset())
+    """Resolve IV -> receipt token -> underlying for both Euler and Aave."""
+    receipt_token = str(credit_vault(intermediate_vault).asset())
+    return str(credit_vault(receipt_token).asset())
 
 
 def _derive_borrow_token(target_vault: str, target_asset: str | None, vault_type: int) -> str:
@@ -1535,23 +1531,43 @@ def _derive_borrow_token(target_vault: str, target_asset: str | None, vault_type
     return str(credit_vault(target_vault).asset())
 
 
+def _create_vault_call(
+    vault_type: int, intermediate_vault: str, target_vault: str, ltv: int,
+    target_asset: str | None = None,
+) -> tuple[str, list]:
+    """Return ``(function_name, args)`` for the factory's typed create entrypoint.
+
+    Picks ``createEulerCollateralVault`` (Euler V2) or
+    ``createAaveV3CollateralVault`` (Aave V3, which additionally takes the target
+    asset) based on ``vault_type``.
+    """
+    if vault_type not in (EULER_V2, AAVE_V3):
+        raise click.UsageError("Vault type must be 0 (Euler) or 1 (Aave).")
+    if not uses_pair_risk():
+        from ..constants import ZERO_ADDRESS
+        return "createCollateralVault", [vault_type, intermediate_vault, target_vault, ltv, target_asset or ZERO_ADDRESS]
+    if vault_type == EULER_V2:
+        return "createEulerCollateralVault", [intermediate_vault, target_vault, ltv]
+    return "createAaveV3CollateralVault", [intermediate_vault, target_vault, ltv, target_asset]
+
+
 def _build_open_position_batch(
-    factory, create_args: list, predicted_address: str,
+    factory, create_fn: str, create_args: list, predicted_address: str,
     raw_deposit: int, raw_borrow: int | None, sender: str,
 ) -> list[tuple]:
     """Build EVC batch items for create-vault + deposit + (optional) borrow."""
     items = []
 
     # Item 1: create vault
-    create_data = factory.createCollateralVault.encode_input(*create_args)
+    create_data = getattr(factory, create_fn).encode_input(*create_args)
     items.append((str(factory.address), sender, 0, create_data))
 
-    # Item 2: deposit underlying
+    # The first factory argument is the IV for either typed entrypoint.
+    receipt_token = str(credit_vault(create_args[0] if uses_pair_risk() else create_args[1]).asset())
+    items.extend(underlying_deposit_items(predicted_address, receipt_token, raw_deposit, sender))
     cv = collateral_vault(predicted_address)
-    deposit_data = cv.depositUnderlying.encode_input(raw_deposit)
-    items.append((predicted_address, sender, 0, deposit_data))
 
-    # Item 3 (optional): borrow
+    # Final item (optional): borrow
     if raw_borrow is not None:
         borrow_data = cv.borrow.encode_input(raw_borrow, sender)
         items.append((predicted_address, sender, 0, borrow_data))
@@ -1571,14 +1587,14 @@ def _build_open_position_batch(
 @pass_ctx
 def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_type, ltv,
                   target_asset, deposit_amount, borrow_amount,
-                  account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
+                  account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
     """Create a vault, deposit collateral, and optionally borrow — in one atomic EVC batch.
 
     INTERMEDIATE_VAULT: The Twyne Intermediate Vault (CreditEVault) address.
 
     TARGET_VAULT: External lending vault (Euler eVault or Aave pool).
 
-    Uses depositUnderlying() so --deposit is in raw token units (e.g. wstETH, WETH),
+    Uses AssetZap and skim, so --deposit is in underlying token units (e.g. wstETH, WETH),
     not receipt token units (ewstETH, awstETH).
     """
     from ..constants import ZERO_ADDRESS
@@ -1597,8 +1613,10 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
         target_asset_addr = target_asset or ZERO_ADDRESS
 
         # 1. Predict vault address via simulation
-        create_args = [vault_type, intermediate_vault, target_vault, ltv, target_asset_addr]
-        sim = simulate_through_evc(fct, "createCollateralVault", create_args, sender=account)
+        create_fn, create_args = _create_vault_call(
+            vault_type, intermediate_vault, target_vault, ltv, target_asset_addr,
+        )
+        sim = simulate_through_evc(fct, create_fn, create_args, sender=account)
         if not sim["success"]:
             click.echo(f"Simulation failed: {sim['error']}", err=True)
             _show_verbose_error(ctx, sim)
@@ -1622,8 +1640,8 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
             borrow_symbol = borrow_token.symbol()
 
         # 3. Parse amounts and check balance
-        raw_deposit = parse_amount(deposit_amount, deposit_decimals)
-        raw_borrow = parse_amount(borrow_amount, borrow_decimals) if borrow_amount else None
+        raw_deposit = parse_amount(deposit_amount, deposit_decimals, raw=raw)
+        raw_borrow = parse_amount(borrow_amount, borrow_decimals, raw=raw) if borrow_amount else None
 
         # Check user has enough deposit token
         user_balance = deposit_token.balanceOf(str(account.address))
@@ -1658,23 +1676,20 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
             details.append(("Borrow", f"{borrow_amount} {borrow_symbol}"))
         details.append(("Sender", str(account.address)))
 
-        if dry_run:
-            click.echo("Dry run — vault creation simulation passed.")
-            return
-
         # 5. Build gas kwargs from CLI flags
         gas_kwargs = _build_gas_kwargs(**_)
 
         # 6. Handle token approval (must happen before batch simulation,
-        #    since depositUnderlying does transferFrom which needs allowance)
-        if not ensure_allowance(deposit_token_addr, predicted_address, raw_deposit, account,
-                                skip_confirm=skip_confirm, **gas_kwargs):
+        #    since AssetZap pulls the underlying token from the sender)
+        if not ensure_allowance(deposit_token_addr, str(asset_zap().address) if uses_pair_risk() else predicted_address, raw_deposit, account,
+                                skip_confirm=skip_confirm, skip_approval=skip_approval or dry_run,
+                                max_approve=max_approve, **gas_kwargs):
             click.echo("Approval declined.")
             return
 
         # 7. Build and simulate full batch (approval now in place)
         batch_items = _build_open_position_batch(
-            fct, create_args, predicted_address,
+            fct, create_fn, create_args, predicted_address,
             raw_deposit, raw_borrow, str(account.address),
         )
         evc_instance = evc_contract()
@@ -1684,14 +1699,18 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
             click.echo(f"\nBatch simulation failed: {err_msg}", err=True)
             # Detect token transfer failures specifically
             if "E_TransferFromFailed" in err_msg or "0x9773bb71" in err_msg:
-                click.echo("The vault's depositUnderlying could not pull tokens from your wallet.", err=True)
+                click.echo("AssetZap could not transfer tokens from your wallet.", err=True)
                 click.echo("Verify you have sufficient token balance (not just ETH).", err=True)
                 raise SystemExit(1)
             click.echo("Note: vault creation simulation passed. The batch revert may be "
                        "due to Ape trace bugs or transient state.", err=True)
             _show_verbose_error(ctx, sim_batch)
-            if not click.confirm("Proceed with on-chain submission anyway?", default=False):
+            if dry_run or not click.confirm("Proceed with on-chain submission anyway?", default=False):
                 raise SystemExit(1)
+
+        if dry_run:
+            click.echo("Dry run — full batch simulation passed.")
+            return
 
         # 8. Confirm and execute
         if not confirm_prompt(f"Open {vault_type_name} position", details, skip_confirm):
@@ -1968,7 +1987,7 @@ def _migrate_euler(ctx, position, ltv, account, dry_run, skip_confirm, **gas_ext
     fct = collateral_vault_factory()
     sender = str(account.address)
 
-    # Resolve IV → eVault share token for factory
+    # Display the receipt token; the factory receives the IV itself.
     iv_addr = position.intermediate_vault
     factory_vault = resolve_euler_factory_vault(iv_addr)
     if factory_vault:
@@ -1978,11 +1997,10 @@ def _migrate_euler(ctx, position, ltv, account, dry_run, skip_confirm, **gas_ext
 
     # Derive target vault (the debt eVault is the target vault for Euler)
     target_vault = position.debt_address
-    target_asset = "0x0000000000000000000000000000000000000000"
-
-    # 1. Simulate createCollateralVault to predict CV address
-    create_args = [EULER_V2, factory_vault, target_vault, ltv, target_asset]
-    sim = simulate_through_evc(fct, "createCollateralVault", create_args, sender=account)
+    # 1. Simulate the typed create entrypoint to predict CV address.
+    # Euler V2 → createEulerCollateralVault (no target-asset arg).
+    create_fn, create_args = _create_vault_call(EULER_V2, iv_addr, target_vault, ltv)
+    sim = simulate_through_evc(fct, create_fn, create_args, sender=account)
     if not sim["success"]:
         click.echo(f"Create vault simulation failed: {sim['error']}", err=True)
         _show_verbose_error(ctx, sim)
@@ -2008,7 +2026,7 @@ def _migrate_euler(ctx, position, ltv, account, dry_run, skip_confirm, **gas_ext
     teleport_data = cv.teleport.encode_input(
         position.collateral_amount, uint256_max, position.sub_account_id,
     )
-    create_data = fct.createCollateralVault.encode_input(*create_args)
+    create_data = getattr(fct, create_fn).encode_input(*create_args)
 
     batch_items = [
         (str(fct.address), sender, 0, create_data),
@@ -2059,8 +2077,7 @@ def _migrate_aave(ctx, position, ltv, account, dry_run, skip_confirm, **gas_extr
     iv_addr = position.intermediate_vault
     click.echo(f"  Intermediate vault: {format_address(iv_addr)}", err=True)
 
-    # On mainnet the factory's _intermediateVault param expects the aToken wrapper,
-    # which is registered in VaultManager (not the IV address itself).
+    # Display the receipt token; the factory receives the IV itself.
     wrapper_addr = resolve_aave_factory_vault(iv_addr)
     if not wrapper_addr:
         click.echo(f"Cannot resolve aToken wrapper for IV {iv_addr}", err=True)
@@ -2072,9 +2089,10 @@ def _migrate_aave(ctx, position, ltv, account, dry_run, skip_confirm, **gas_extr
     target_vault = AAVE_V3_POOL
     target_asset = position.debt_address  # WETH
 
-    # 1. Simulate createCollateralVault to predict CV address
-    create_args = [AAVE_V3, wrapper_addr, target_vault, ltv, target_asset]
-    sim = simulate_through_evc(fct, "createCollateralVault", create_args, sender=account)
+    # 1. Simulate the typed create entrypoint to predict CV address.
+    # Aave V3 → createAaveV3CollateralVault (includes target asset).
+    create_fn, create_args = _create_vault_call(AAVE_V3, iv_addr, target_vault, ltv, target_asset)
+    sim = simulate_through_evc(fct, create_fn, create_args, sender=account)
     if not sim["success"]:
         click.echo(f"Create vault simulation failed: {sim['error']}", err=True)
         _show_verbose_error(ctx, sim)
@@ -2100,8 +2118,7 @@ def _migrate_aave(ctx, position, ltv, account, dry_run, skip_confirm, **gas_extr
     evc_instance = evc_contract()
     evc_addr = str(evc_instance.address)
     zero_addr = "0x0000000000000000000000000000000000000000"
-
-    create_data = fct.createCollateralVault.encode_input(*create_args)
+    create_data = getattr(fct, create_fn).encode_input(*create_args)
 
     # onBehalfOfAccount must be address(0) when targeting the EVC itself
     enable_op_data = evc_instance.setAccountOperator.encode_input(sender, op_addr, True)
@@ -2142,8 +2159,7 @@ def _migrate_aave(ctx, position, ltv, account, dry_run, skip_confirm, **gas_extr
         # the factory arguments.
         click.echo("\nDry run — createCV simulation passed.")
         click.echo("Batch items (4):")
-        click.echo("  1. createCollateralVault (validated)")
-        click.echo("  2. setAccountOperator(enable)")
+        click.echo("  1. createAaveV3CollateralVault (validated)")
         click.echo("  3. executeTeleport")
         click.echo("  4. setAccountOperator(disable)")
         for label, value in details:

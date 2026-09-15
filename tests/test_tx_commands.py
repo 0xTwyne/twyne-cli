@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 # --------------------------------------------------------------------------- #
@@ -265,8 +266,10 @@ class TestAaveIVResolution:
         assert result.exit_code == 0
         assert "aToken wrapper" not in result.stderr  # rewrite path removed
         # IV passes through unchanged
+        fn_name = mock_sim.call_args[0][1]
         call_args = mock_sim.call_args[0][2]
-        assert call_args[1] == AAVE_IV
+        assert fn_name == "createAaveV3CollateralVault"
+        assert call_args[0] == AAVE_IV
 
     @patch("twyne_cli.commands.tx.simulate_through_evc")
     @patch("twyne_cli.commands.tx.resolve_account")
@@ -294,8 +297,10 @@ class TestAaveIVResolution:
         # No resolution note on stderr
         assert "aToken wrapper" not in result.stderr
         # Address passed through as-is
+        fn_name = mock_sim.call_args[0][1]
         call_args = mock_sim.call_args[0][2]
-        assert call_args[1] == AAVE_WRAPPER
+        assert fn_name == "createAaveV3CollateralVault"
+        assert call_args[0] == AAVE_WRAPPER
 
     @patch("twyne_cli.commands.tx.simulate_through_evc")
     @patch("twyne_cli.commands.tx.resolve_account")
@@ -325,8 +330,10 @@ class TestAaveIVResolution:
         assert result.exit_code == 0
         assert "collateral asset" not in result.stderr  # rewrite path removed
         # IV passes through unchanged
+        fn_name = mock_sim.call_args[0][1]
         call_args = mock_sim.call_args[0][2]
-        assert call_args[1] == FAKE_IV
+        assert fn_name == "createEulerCollateralVault"
+        assert call_args[0] == FAKE_IV
 
     @patch("twyne_cli.commands.tx.resolve_euler_factory_vault", return_value=None)
     @patch("twyne_cli.commands.tx.simulate_through_evc")
@@ -354,8 +361,10 @@ class TestAaveIVResolution:
         # No resolution note
         assert "collateral asset" not in result.stderr
         # Original address passed through
+        fn_name = mock_sim.call_args[0][1]
         call_args = mock_sim.call_args[0][2]
-        assert call_args[1] == FAKE_IV
+        assert fn_name == "createEulerCollateralVault"
+        assert call_args[0] == FAKE_IV
 
 
 # --------------------------------------------------------------------------- #
@@ -376,6 +385,17 @@ def _mock_erc20(address):
 
 
 class TestOpenPosition:
+    @pytest.fixture(autouse=True)
+    def mock_batch_dependencies(self):
+        # Command tests isolate orchestration. Fork tests execute the real encoders.
+        with patch("twyne_cli.commands.tx.underlying_deposit_items", return_value=[]), \
+             patch("twyne_cli.commands.tx.asset_zap", return_value=MagicMock(address="0x1a4De2Ef2d396B5d506e11070c6Df32FB663A7B2")), \
+             patch("twyne_cli.commands.tx.collateral_vault"), \
+             patch("twyne_cli.commands.tx.evc_contract"), \
+             patch("twyne_cli.commands.tx.ensure_allowance", return_value=True), \
+             patch("twyne_cli.commands.tx.simulate_tx", return_value={"success": True}):
+            yield
+
     """CliRunner tests for `twyne tx factory open-position`."""
 
     def test_open_position_help(self):
@@ -450,8 +470,10 @@ class TestOpenPosition:
         assert "Dry run" in result.output
         # v1.0.5: no rewrite — IV passes through to the factory unchanged.
         assert "collateral asset" not in result.stderr
+        fn_name = mock_sim_evc.call_args[0][1]
         call_args = mock_sim_evc.call_args[0][2]
-        assert call_args[1] == FAKE_IV
+        assert fn_name == "createEulerCollateralVault"
+        assert call_args[0] == FAKE_IV
 
     @patch("twyne_cli.commands.tx.erc20", side_effect=_mock_erc20)
     @patch("twyne_cli.commands.tx.credit_vault")
@@ -575,7 +597,8 @@ class TestOpenPosition:
 
         runner = CliRunner()
         with patch("twyne_cli.context.TwyneContext.connect"), \
-             patch("twyne_cli.context.TwyneContext.disconnect"):
+             patch("twyne_cli.context.TwyneContext.disconnect"), \
+             patch("twyne_cli.commands.tx.underlying_deposit_items", return_value=[]):
             result = runner.invoke(cli, [
                 "tx", "factory", "open-position",
                 FAKE_IV, FAKE_TV,
@@ -765,7 +788,7 @@ class TestClosePosition:
         mock_resolve.return_value = MagicMock(address="0xSENDER")
         mock_delev_op.return_value = MagicMock(address=FAKE_OPERATOR_ADDR)
         mock_evc.return_value = MagicMock(address=FAKE_EVC_ADDR)
-        mock_vm.return_value = MagicMock(**{"externalLiqBuffers.return_value": 9500})  # 95% buffer
+        mock_vm.return_value = MagicMock(**{"liqParams.return_value": (9500, 9800, 200)})  # 95% buffer
         mock_sim_tx.return_value = {"success": True}
 
         runner = CliRunner()
@@ -806,7 +829,7 @@ class TestClosePosition:
         mock_delev_op.return_value = MagicMock(address=FAKE_OPERATOR_ADDR)
         evc_mock = MagicMock(address=FAKE_EVC_ADDR)
         mock_evc.return_value = evc_mock
-        mock_vm.return_value = MagicMock(**{"externalLiqBuffers.return_value": 9500})
+        mock_vm.return_value = MagicMock(**{"liqParams.return_value": (9500, 9800, 200)})
         mock_sim_tx.return_value = {"success": True}
 
         runner = CliRunner()
@@ -847,7 +870,7 @@ class TestClosePosition:
         mock_resolve.return_value = MagicMock(address="0xSENDER")
         mock_delev_op.return_value = MagicMock(address=FAKE_OPERATOR_ADDR)
         mock_evc.return_value = MagicMock(address=FAKE_EVC_ADDR)
-        mock_vm.return_value = MagicMock(**{"externalLiqBuffers.return_value": 9500})
+        mock_vm.return_value = MagicMock(**{"liqParams.return_value": (9500, 9800, 200)})
         mock_sim_tx.return_value = {"success": False, "error": "InsufficientCollateral"}
 
         runner = CliRunner()

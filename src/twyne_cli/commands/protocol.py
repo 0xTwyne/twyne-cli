@@ -2,9 +2,8 @@
 
 import click
 
-from ..cache import get_vault_cache
 from ..completions import complete_asset_or_iv
-from ..constants import DEFILLAMA_API_URL, DEFILLAMA_TWYNE_SLUG, MAXFACTOR
+from ..constants import DEFILLAMA_API_URL, DEFILLAMA_TWYNE_SLUG
 from ..context import TwyneContext, pass_ctx
 from ..contracts import (
     aave_v3_pool,
@@ -21,13 +20,7 @@ from ..formatting import (
     output_kv,
     output_table,
 )
-
-# Aave eMode category IDs per Aave intermediate vault.
-# Adding a new Aave IV already requires updating mainnet.json and
-# aaveIVToFactoryVault, so updating this map at the same time is acceptable.
-AAVE_EMODE_MAP: dict[str, int] = {
-    "aave_awstETH": 1,
-}
+from ..risk import allowed_pairs
 
 
 @click.group()
@@ -46,76 +39,34 @@ def overview(ctx: TwyneContext):
         vm = vault_manager()
         iv_map = intermediate_vaults()
 
-        # Build maps: asset → IV name, asset → IV address.
-        # Each IV's asset() returns its collateral token (e.g. eWETH).
-        asset_to_iv: dict[str, str] = {}
-        asset_to_iv_addr: dict[str, str] = {}
+        asset_data = []
         for iv_name, iv_addr in iv_map.items():
             try:
-                iv_contract = credit_vault(iv_addr)
-                asset_addr = str(iv_contract.asset(block_identifier=block)).lower()
-                asset_to_iv[asset_addr] = iv_name
-                asset_to_iv_addr[asset_addr] = iv_addr
-            except Exception:
-                pass
-
-        # Use cached vault+asset data instead of scanning events
-        cache = get_vault_cache(ctx)
-        unique_assets = cache.get_unique_assets(up_to_block=block)
-
-        asset_data: list[dict] = []
-        for asset_addr_lower, _vault_addrs in unique_assets.items():
-            asset_addr = asset_addr_lower
-
-            # Query VaultManager params live (governance-controlled, not cached).
-            # v1.0.5+: mappings are keyed by intermediate vault address.
-            try:
-                iv_addr = asset_to_iv_addr.get(asset_addr_lower)
-                iv_name = asset_to_iv.get(asset_addr_lower, "unknown")
-                if not iv_addr:
-                    asset_data.append({
-                        "collateral_asset": asset_addr,
-                        "intermediate_vault": iv_name,
-                        "error": "No IV mapping found",
-                    })
-                    continue
-
-                max_ltv = vm.maxTwyneLTVs(iv_addr, block_identifier=block)
-                ext_buffer = vm.externalLiqBuffers(iv_addr, block_identifier=block)
-
-                asset_data.append({
-                    "collateral_asset": asset_addr,
-                    "intermediate_vault": iv_name,
-                    "max_twyne_ltv_bps": max_ltv,
-                    "max_twyne_ltv_pct": max_ltv / MAXFACTOR * 100,
-                    "external_liq_buffer_bps": ext_buffer,
-                    "external_liq_buffer_pct": ext_buffer / MAXFACTOR * 100,
-                })
-            except Exception:
-                asset_data.append({
-                    "collateral_asset": asset_addr,
-                    "error": "Failed to query VaultManager",
-                })
+                asset_data.extend(allowed_pairs(iv_name, iv_addr, block, vm))
+            except Exception as exc:
+                asset_data.append({"intermediate_vault": iv_addr, "error": str(exc)})
 
         if ctx.force_json or not is_tty():
             output_json({
-                "total_collateral_assets": len(asset_data),
+                "total_collateral_assets": len({p.get("collateral_asset") for p in asset_data if "error" not in p}),
+                "total_pairs": len(asset_data),
                 "collateral_assets": asset_data,
             })
         else:
             rows = []
             for a in asset_data:
                 if "error" in a:
-                    rows.append([format_address(a["collateral_asset"]), "?", "ERR", "ERR"])
+                    rows.append([a["intermediate_vault"], "?", "?", "ERR", "ERR"])
                 else:
                     rows.append([
                         a["intermediate_vault"],
                         format_address(a["collateral_asset"]),
+                        format_address(a["debt_asset"]),
                         format_bps(a["max_twyne_ltv_bps"]),
                         format_bps(a["external_liq_buffer_bps"]),
                     ])
             output_table(
-                ["Intermediate Vault", "Collateral Asset", "Max LTV~", "Ext Liq Buffer"],
+                ["Intermediate Vault", "Collateral Asset", "Debt Asset", "Max LTV~", "Ext Liq Buffer"],
                 rows,
                 title="Protocol Overview — Collateral Asset Parameters",
             )
@@ -133,7 +84,6 @@ def rates(ctx: TwyneContext, asset_or_iv_address: str):
         block = ctx.resolve_block()
         vm = vault_manager()
 
-        # v1.0.5+: maxTwyneLTVs and externalLiqBuffers are keyed by IV address.
         # First check if the input is an IV address directly.
         is_iv = False
         try:
@@ -158,30 +108,15 @@ def rates(ctx: TwyneContext, asset_or_iv_address: str):
                     continue
 
         if iv_addr:
-            max_ltv = vm.maxTwyneLTVs(iv_addr, block_identifier=block)
-            ext_buffer = vm.externalLiqBuffers(iv_addr, block_identifier=block)
-
-            rate_data = {
-                "intermediate_vault": iv_addr,
-                "max_twyne_ltv_bps": max_ltv,
-                "max_twyne_ltv_pct": max_ltv / MAXFACTOR * 100,
-                "external_liq_buffer_bps": ext_buffer,
-                "external_liq_buffer_pct": ext_buffer / MAXFACTOR * 100,
-            }
+            name = next((name for name, address in intermediate_vaults().items() if address.lower() == iv_addr.lower()), None)
+            if name is None:
+                raise click.ClickException("The intermediate vault is not in this chain's address registry.")
+            pairs = allowed_pairs(name, iv_addr, block, vm)
+            rate_data = {"intermediate_vault": iv_addr, "pairs": pairs}
+            if len(pairs) == 1:
+                rate_data.update(pairs[0])
             if not is_iv:
                 rate_data["collateral_asset"] = asset_or_iv_address
-
-            # Get target vault count for the IV
-            try:
-                tv_len = vm.targetVaultLength(iv_addr, block_identifier=block)
-                rate_data["target_vault_count"] = tv_len
-                targets = []
-                for i in range(tv_len):
-                    tv = vm.allowedTargetVaultList(iv_addr, i, block_identifier=block)
-                    targets.append(tv)
-                rate_data["allowed_target_vaults"] = targets
-            except Exception:
-                pass
 
         else:
             rate_data = {
@@ -274,77 +209,13 @@ def tvl(ctx: TwyneContext):
 
 
 def _fetch_euler_pairs(iv_name: str, iv_addr: str, vm, block) -> list[dict]:
-    """Fetch external LTV pairs for an Euler intermediate vault."""
-    iv = credit_vault(iv_addr)
-    collateral = str(iv.asset(block_identifier=block))
-
-    tv_count = vm.targetVaultLength(iv_addr, block_identifier=block)
-    # v1.0.5+: keyed by IV address, not collateral asset
-    max_twyne = vm.maxTwyneLTVs(iv_addr, block_identifier=block)
-    beta_safe = vm.externalLiqBuffers(iv_addr, block_identifier=block)
-
-    pairs: list[dict] = []
-    for i in range(tv_count):
-        tv_addr = str(vm.allowedTargetVaultList(iv_addr, i, block_identifier=block))
-        tv = credit_vault(tv_addr)
-
-        liq_ltv = tv.LTVLiquidation(collateral, block_identifier=block)
-        borr_ltv = tv.LTVBorrow(collateral, block_identifier=block)
-        symbol = tv.symbol(block_identifier=block)
-        ltv_full = tv.LTVFull(collateral, block_identifier=block)
-
-        pairs.append({
-            "iv_name": iv_name,
-            "debt_vault": symbol,
-            "debt_vault_address": tv_addr,
-            "ext_liq_ltv_bps": liq_ltv,
-            "ext_liq_ltv_pct": liq_ltv / MAXFACTOR * 100,
-            "ext_borr_ltv_bps": borr_ltv,
-            "ext_borr_ltv_pct": borr_ltv / MAXFACTOR * 100,
-            "max_twyne_ltv_bps": max_twyne,
-            "max_twyne_ltv_pct": max_twyne / MAXFACTOR * 100,
-            "beta_safe_bps": beta_safe,
-            "beta_safe_pct": beta_safe / MAXFACTOR * 100,
-            "ltv_full": {
-                "borrow_ltv_bps": ltv_full[0],
-                "liquidation_ltv_bps": ltv_full[1],
-                "initial_liquidation_ltv_bps": ltv_full[2],
-                "target_timestamp": ltv_full[3],
-                "ramp_duration": ltv_full[4],
-            },
-        })
-
-    return pairs
+    """Read permitted Euler pairs with debt-specific governance parameters."""
+    return allowed_pairs(iv_name, iv_addr, block, vm)
 
 
 def _fetch_aave_pairs(iv_name: str, iv_addr: str, vm, pool, block) -> list[dict]:
-    """Fetch external LTV pairs for an Aave intermediate vault."""
-    emode_id = AAVE_EMODE_MAP.get(iv_name)
-    if emode_id is None:
-        return [{"iv_name": iv_name, "error": f"No eMode mapping for {iv_name}"}]
-
-    emode_data = pool.getEModeCategoryData(emode_id, block_identifier=block)
-    # emode_data: (ltv, liquidationThreshold, liquidationBonus, priceSource, label)
-    borr_ltv = emode_data[0]   # ltv = borrow LTV in bps
-    liq_ltv = emode_data[1]    # liquidationThreshold = liquidation LTV in bps
-
-    # v1.0.5+: keyed by IV address, not wrapper/collateral asset
-    max_twyne = vm.maxTwyneLTVs(iv_addr, block_identifier=block)
-    beta_safe = vm.externalLiqBuffers(iv_addr, block_identifier=block)
-
-    return [{
-        "iv_name": iv_name,
-        "debt_vault": f"WETH(eMode{emode_id})",
-        "emode_id": emode_id,
-        "ext_liq_ltv_bps": liq_ltv,
-        "ext_liq_ltv_pct": liq_ltv / MAXFACTOR * 100,
-        "ext_borr_ltv_bps": borr_ltv,
-        "ext_borr_ltv_pct": borr_ltv / MAXFACTOR * 100,
-        "max_twyne_ltv_bps": max_twyne,
-        "max_twyne_ltv_pct": max_twyne / MAXFACTOR * 100,
-        "beta_safe_bps": beta_safe,
-        "beta_safe_pct": beta_safe / MAXFACTOR * 100,
-    }]
+    """Read permitted Aave debt assets and the factory's current eMode IDs."""
+    return allowed_pairs(iv_name, iv_addr, block, vm, pool)
 
 
 # --------------------------------------------------------------------------- #

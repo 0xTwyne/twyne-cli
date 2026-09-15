@@ -70,7 +70,7 @@ class TestEulerDiscovery:
         """Discovers a single Euler position with collateral + debt."""
         from twyne_cli.discover import _euler_sub_account, discover_euler_positions
 
-        mock_vm.return_value = MagicMock(**{"maxTwyneLTVs.return_value": 9800})
+        mock_vm.return_value = MagicMock(**{"liqParams.return_value": (9999, 9800, 200)})
 
         # Only sub-account 0 has collaterals/controllers
         sub0 = _euler_sub_account(FAKE_USER, 0)
@@ -120,7 +120,7 @@ class TestEulerDiscovery:
         """Scans sub-accounts 0-3 and finds position on sub-account 0."""
         from twyne_cli.discover import discover_euler_positions
 
-        mock_vm.return_value = MagicMock(**{"maxTwyneLTVs.return_value": 9800})
+        mock_vm.return_value = MagicMock(**{"liqParams.return_value": (9999, 9800, 200)})
         evc_mock = MagicMock()
 
         def get_collaterals(addr):
@@ -197,7 +197,7 @@ class TestAaveDiscovery:
         """Discovers Aave wstETH/WETH position with eMode-aware liqLTV."""
         from twyne_cli.discover import discover_aave_positions
 
-        mock_vm.return_value = MagicMock(**{"maxTwyneLTVs.return_value": 9800})
+        mock_vm.return_value = MagicMock(**{"liqParams.return_value": (9999, 9800, 200)})
 
         # Pool returns non-zero debt
         pool_mock = MagicMock()

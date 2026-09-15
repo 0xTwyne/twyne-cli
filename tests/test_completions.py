@@ -103,7 +103,7 @@ def test_iv_completion_case_insensitive_name():
 
 def test_iv_completion_empty_prefix():
     results = complete_iv_address(None, None, "")
-    assert len(results) == 3  # euler_eWETH, euler_ewstETH, aave_awstETH
+    assert len(results) == 6  # Two Euler and four Aave collateral markets.
 
 
 def test_iv_completion_no_match():
