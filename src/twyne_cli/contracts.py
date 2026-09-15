@@ -11,7 +11,7 @@ from .exceptions import EulerNotSupportedError, OperatorsNotSupportedError
 def _contract(address, abi):
     """Lazy wrapper around ape.Contract — defers ape import to first use."""
     from ape import Contract
-    return Contract(address, abi=abi)
+    return Contract(address, abi=abi, fetch_from_explorer=False, detect_proxy=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -23,6 +23,8 @@ _ABI_CACHE: dict[str, list] = {}
 
 def _load_abi(name: str) -> list:
     """Load an ABI JSON file by contract name (cached)."""
+    if active_chain().chain_id == 4326 and name in {"CollateralVault", "CollateralVaultFactory", "VaultManager"}:
+        name += "Legacy"
     if name not in _ABI_CACHE:
         ref = resources.files("twyne_cli") / "abis" / f"{name}.json"
         _ABI_CACHE[name] = json.loads(ref.read_text())
@@ -93,6 +95,19 @@ def collateral_vault_factory():
 def collateral_vault(address: str):
     """Get a CollateralVault contract instance at a given address."""
     return _contract(address, abi=_load_abi("CollateralVault"))
+
+
+def uses_pair_risk() -> bool:
+    """Mainnet uses 1.0.7; MegaETH retains the verified legacy deployment."""
+    return active_chain().chain_id == 1
+
+
+def asset_zap():
+    """Get the AssetZap periphery used for underlying collateral deposits."""
+    address = get_address("assetZap")
+    if not address:
+        raise click_exception(f"No AssetZap is configured for chain {active_chain().chain_id}.")
+    return _contract(address, abi=_load_abi("AssetZap"))
 
 
 def credit_vault(address: str):

@@ -407,19 +407,16 @@ class TestOperatorSimulations:
         assert sim["success"] is False
         assert sim["error"]
 
-    def test_euler_teleport_not_a_cv_function(self, test_account, ape_provider):
-        """Euler teleport is NOT a function on CollateralVault — it's an event (T_Teleport).
-
-        BUG DOCUMENTED: The CLI has no teleport function in CollateralVault ABI.
-        Teleport is executed via TeleportOperator contract, not directly on the CV.
-        """
+    def test_euler_teleport_requires_borrower(self, test_account, test_account_2, ape_provider):
+        """The verified ABI exposes Euler teleport; another account cannot call it."""
         from twyne_cli.contracts import collateral_vault as cv_fn
 
         src_addr = _create_vault_via_evc(test_account)
         cv = cv_fn(src_addr)
-
-        # teleport is an event (T_Teleport), not a callable function
-        assert not hasattr(cv, "teleport") or not callable(getattr(cv, "teleport", None))
+        assert cv.teleport.encode_input(0, 0, 0)
+        sim = simulate_through_evc(cv, "teleport", [0, 0, 0], sender=test_account_2)
+        assert sim["success"] is False
+        assert sim["error"]
 
 
 # --------------------------------------------------------------------------- #

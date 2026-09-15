@@ -1,0 +1,1094 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "_evc",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_swapper",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "EVC",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "SWAPPER",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "zap",
+    "inputs": [
+      {
+        "name": "tokenIn",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amountIn",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "swapData",
+        "type": "bytes[]",
+        "internalType": "bytes[]"
+      },
+      {
+        "name": "destination",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "minAmountOut",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "amountOut",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "zapUnderlying",
+    "inputs": [
+      {
+        "name": "tokenIn",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amountIn",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "destination",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "minAmountOut",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "amountOut",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "T_AddAllowedTargetVault",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "targetVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_AddAllowedTargetVaultAsset",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "targetVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "targetAsset",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_AssetZap",
+    "inputs": [
+      {
+        "name": "sender",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "destination",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "tokenIn",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "amountIn",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "amountOut",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_Borrow",
+    "inputs": [
+      {
+        "name": "targetAmount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "receiver",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_CategoryIdSet",
+    "inputs": [
+      {
+        "name": "targetVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "collateral",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "debt",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "categoryId",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_CollateralVaultCreated",
+    "inputs": [
+      {
+        "name": "vault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_CollateralVaultInitialized",
+    "inputs": [],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_ControllerDisabled",
+    "inputs": [],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_DebtSwapExecuted",
+    "inputs": [
+      {
+        "name": "oldCollateralVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "newCollateralVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "oldDebt",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "newDebt",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_Deposit",
+    "inputs": [
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_DoCall",
+    "inputs": [
+      {
+        "name": "to",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "value",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "data",
+        "type": "bytes",
+        "indexed": false,
+        "internalType": "bytes"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_HandleExternalLiquidation",
+    "inputs": [],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_LeverageDownExecuted",
+    "inputs": [
+      {
+        "name": "collateralVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_LeverageUpExecuted",
+    "inputs": [
+      {
+        "name": "collateralVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_PauseStateChanged",
+    "inputs": [
+      {
+        "name": "newState",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_Rebalance",
+    "inputs": [],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_RedeemUnderlying",
+    "inputs": [
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "receiver",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_Repay",
+    "inputs": [
+      {
+        "name": "repayAmount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetAdmin",
+    "inputs": [
+      {
+        "name": "admin",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetAllowedMorphoMarket",
+    "inputs": [
+      {
+        "name": "targetVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "marketId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "set",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetBeacon",
+    "inputs": [
+      {
+        "name": "targetVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "beacon",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetBorrowBuffer",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "borrowBuffer",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetCollateralVaultFactory",
+    "inputs": [
+      {
+        "name": "factory",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetCollateralVaultLiquidated",
+    "inputs": [
+      {
+        "name": "collateralVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "liquidator",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetExternalLiqBuffer",
+    "inputs": [
+      {
+        "name": "collateralAddress",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "liqBuffer",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
+        "name": "rampDuration",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetIntermediateVault",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "value",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetLTV",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "collateralVault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "borrowLimit",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
+        "name": "liquidationLimit",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
+        "name": "rampDuration",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetMaxLiqLTV",
+    "inputs": [
+      {
+        "name": "collateralAddress",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "ltv",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
+        "name": "rampDuration",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetOracleResolvedVault",
+    "inputs": [
+      {
+        "name": "collateralAddress",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "allow",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetOracleResolvedVault",
+    "inputs": [
+      {
+        "name": "oracleRouter",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "collateralAddress",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "allow",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetOracleRouter",
+    "inputs": [
+      {
+        "name": "newOracleRouter",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetPauseGuardian",
+    "inputs": [
+      {
+        "name": "pauseGuardian",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetTwyneLiqLTV",
+    "inputs": [
+      {
+        "name": "ltv",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_SetVaultManager",
+    "inputs": [
+      {
+        "name": "vaultManager",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_Skim",
+    "inputs": [
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_Teleport",
+    "inputs": [
+      {
+        "name": "toDeposit",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "toBorrow",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "T_Withdraw",
+    "inputs": [
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "receiver",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AlreadyLiquidated",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AssetMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BadDebtNotSettled",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CallerNotAdmin",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CallerNotCollateralVault",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CallerNotOwnerOrCollateralVaultFactory",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CallerNotOwnerOrPauseGuardian",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CannotRebalance",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ControllerDisabled",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EVC_InvalidAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "E_TransferFromFailed",
+    "inputs": [
+      {
+        "name": "errorPermit2",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "errorTransferFrom",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ExternalPositionUnhealthy",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ExternallyLiquidated",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "HealthyNotLiquidatable",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "IncorrectIndex",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "IntermediateVaultAlreadySet",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "IntermediateVaultNotSet",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoLiquidationForZeroReserve",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotAuthorized",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotCollateralVault",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotExternallyLiquidated",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotIntermediateVault",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OnlyWETH",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReceiverNotBorrower",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "Reentrancy",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReentrancyGuardReentrantCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "RepayingMoreThanMax",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SafeERC20FailedOperation",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SelfLiquidation",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SnapshotNotTaken",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SubAccountBlocked",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_BorrowExceedsMaxLTV",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_CV_OperationDisabled",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_CallerNotBorrower",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_CallerNotMorpho",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_CallerNotSelf",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_DeadlineExpired",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_DebtMoreThanMax",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_FeedDecimalsNotCorrect",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_InputIsUnderlying",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_InvalidCollateralVault",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_InvalidWrapper",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_MinAmountOut",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_MorphoNotImplemented",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_NoDebtToSwap",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_NotUnderlying",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_OperationDisabled",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_QuoteNotUSD",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_SameTargetAsset",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_SlippageCheckFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_StakeFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "T_WithdrawMoreThanMax",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnitOfAccountMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ValueOutOfRange",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "VaultStatusLiquidatable",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ViolatorNotCollateralVault",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAddress",
+    "inputs": []
+  }
+]

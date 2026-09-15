@@ -12,6 +12,7 @@ from .contracts import (
     intermediate_vaults,
     vault_manager,
 )
+from .risk import pair_risk
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -172,10 +173,10 @@ def discover_euler_positions(user_address: str) -> list[DiscoveredPosition]:
             liq_ltv_bps = 0
 
         # Get max Twyne liq LTV from VaultManager
-        # v1.0.5+: VaultManager keys maxTwyneLTVs by IV address
+        # Governance parameters are keyed by IV and debt asset.
         try:
             vm = vault_manager()
-            max_twyne_ltv_bps = vm.maxTwyneLTVs(iv_addr)
+            max_twyne_ltv_bps = pair_risk(iv_addr, debt_underlying_addr, vm=vm)["max_twyne_ltv_bps"]
         except Exception:
             max_twyne_ltv_bps = 0
 
@@ -275,10 +276,10 @@ def discover_aave_positions(user_address: str) -> list[DiscoveredPosition]:
                 continue
 
             # Get max Twyne liq LTV from VaultManager
-            # v1.0.5+: VaultManager keys maxTwyneLTVs by IV address
+            # Governance parameters are keyed by IV and debt asset.
             try:
                 vm = vault_manager()
-                max_twyne_ltv_bps = vm.maxTwyneLTVs(iv_addr)
+                max_twyne_ltv_bps = pair_risk(iv_addr, debt_addr, vm=vm)["max_twyne_ltv_bps"]
             except Exception:
                 max_twyne_ltv_bps = 0
 

@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 # --------------------------------------------------------------------------- #
@@ -384,6 +385,17 @@ def _mock_erc20(address):
 
 
 class TestOpenPosition:
+    @pytest.fixture(autouse=True)
+    def mock_batch_dependencies(self):
+        # Command tests isolate orchestration. Fork tests execute the real encoders.
+        with patch("twyne_cli.commands.tx.underlying_deposit_items", return_value=[]), \
+             patch("twyne_cli.commands.tx.asset_zap", return_value=MagicMock(address="0x1a4De2Ef2d396B5d506e11070c6Df32FB663A7B2")), \
+             patch("twyne_cli.commands.tx.collateral_vault"), \
+             patch("twyne_cli.commands.tx.evc_contract"), \
+             patch("twyne_cli.commands.tx.ensure_allowance", return_value=True), \
+             patch("twyne_cli.commands.tx.simulate_tx", return_value={"success": True}):
+            yield
+
     """CliRunner tests for `twyne tx factory open-position`."""
 
     def test_open_position_help(self):
@@ -585,7 +597,8 @@ class TestOpenPosition:
 
         runner = CliRunner()
         with patch("twyne_cli.context.TwyneContext.connect"), \
-             patch("twyne_cli.context.TwyneContext.disconnect"):
+             patch("twyne_cli.context.TwyneContext.disconnect"), \
+             patch("twyne_cli.commands.tx.underlying_deposit_items", return_value=[]):
             result = runner.invoke(cli, [
                 "tx", "factory", "open-position",
                 FAKE_IV, FAKE_TV,
@@ -775,7 +788,7 @@ class TestClosePosition:
         mock_resolve.return_value = MagicMock(address="0xSENDER")
         mock_delev_op.return_value = MagicMock(address=FAKE_OPERATOR_ADDR)
         mock_evc.return_value = MagicMock(address=FAKE_EVC_ADDR)
-        mock_vm.return_value = MagicMock(**{"externalLiqBuffers.return_value": 9500})  # 95% buffer
+        mock_vm.return_value = MagicMock(**{"liqParams.return_value": (9500, 9800, 200)})  # 95% buffer
         mock_sim_tx.return_value = {"success": True}
 
         runner = CliRunner()
@@ -816,7 +829,7 @@ class TestClosePosition:
         mock_delev_op.return_value = MagicMock(address=FAKE_OPERATOR_ADDR)
         evc_mock = MagicMock(address=FAKE_EVC_ADDR)
         mock_evc.return_value = evc_mock
-        mock_vm.return_value = MagicMock(**{"externalLiqBuffers.return_value": 9500})
+        mock_vm.return_value = MagicMock(**{"liqParams.return_value": (9500, 9800, 200)})
         mock_sim_tx.return_value = {"success": True}
 
         runner = CliRunner()
@@ -857,7 +870,7 @@ class TestClosePosition:
         mock_resolve.return_value = MagicMock(address="0xSENDER")
         mock_delev_op.return_value = MagicMock(address=FAKE_OPERATOR_ADDR)
         mock_evc.return_value = MagicMock(address=FAKE_EVC_ADDR)
-        mock_vm.return_value = MagicMock(**{"externalLiqBuffers.return_value": 9500})
+        mock_vm.return_value = MagicMock(**{"liqParams.return_value": (9500, 9800, 200)})
         mock_sim_tx.return_value = {"success": False, "error": "InsufficientCollateral"}
 
         runner = CliRunner()

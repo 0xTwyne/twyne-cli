@@ -69,7 +69,8 @@ def _encode_collateral_op(fn_name: str, op: dict, on_behalf_of: str, block=None)
     vault_addr = op["vault"]
     cv = collateral_vault(vault_addr)
 
-    asset_addr = cv.asset(block_identifier=block)
+    asset_addr = (cv.targetAsset(block_identifier=block) if fn_name in ("borrow", "repay")
+                  else cv.asset(block_identifier=block))
     token = erc20(asset_addr)
     decimals = token.decimals(block_identifier=block)
 
