@@ -109,7 +109,10 @@ class VaultCache:
         if from_block > current_block:
             return 0
 
-        factory = Contract(self.factory_addr, abi=_load_abi("CollateralVaultFactory"))
+        # fetch_from_explorer/detect_proxy off: the CVs are beacon proxies and an explorer
+        # lookup needs an API key (it logs an error on every non-mainnet chain).
+        factory = Contract(self.factory_addr, abi=_load_abi("CollateralVaultFactory"),
+                           fetch_from_explorer=False, detect_proxy=False)
         cv_abi = _load_abi("CollateralVault")
 
         # Existing addresses for dedup
@@ -121,7 +124,9 @@ class VaultCache:
             gap = current_block - from_block + 1
             click.echo(f"Updating vault cache ({gap} new blocks to scan)...", err=True)
 
-        events = list(factory.T_CollateralVaultCreated.range(from_block, current_block))
+        # Ape's range() stop is exclusive; +1 so a vault created in current_block is not
+        # skipped (and then lost, because current_block is marked scanned below).
+        events = list(factory.T_CollateralVaultCreated.range(from_block, current_block + 1))
 
         new_count = 0
         for evt in events:
@@ -131,7 +136,7 @@ class VaultCache:
 
             # Query immutable asset() for this vault
             try:
-                cv = Contract(vault_addr, abi=cv_abi)
+                cv = Contract(vault_addr, abi=cv_abi, fetch_from_explorer=False, detect_proxy=False)
                 asset_addr = str(cv.asset())
             except Exception:
                 asset_addr = ""

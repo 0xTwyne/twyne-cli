@@ -79,11 +79,28 @@ def format_hf(raw: int) -> str:
     return f"{val:.4f}"
 
 
+def hf_or_none(raw: int) -> float | None:
+    """1e18 health factor as a float for JSON; None when infinite (no debt)."""
+    return None if raw == 2**256 - 1 else raw / 1e18
+
+
 def format_usd(value: float) -> str:
     """Format a USD value."""
     if abs(value) < 0.01:
         return "$0.00"
     return f"${value:,.2f}"
+
+
+def format_value(value: float, unit: str) -> str:
+    """Format a valued amount in its unit: "$1.00" for USD, "1.00 USDG" otherwise.
+
+    Twyne-on-Morpho values are in the market loan token, never USD — never print them with "$".
+    """
+    if unit == "USD":
+        return format_usd(value)
+    if abs(value) < 0.01:
+        return f"0.00 {unit}"
+    return f"{value:,.2f} {unit}"
 
 
 def format_bps(raw: int) -> str:

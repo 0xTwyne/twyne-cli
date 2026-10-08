@@ -22,6 +22,9 @@ from ..formatting import (
 )
 from ..risk import allowed_pairs
 
+# DefiLlama chain keys per chain id.
+_DEFILLAMA_CHAIN = {1: "Ethereum", 42161: "Arbitrum", 4326: "MegaETH"}
+
 
 @click.group()
 def protocol():
@@ -156,13 +159,15 @@ def tvl(ctx: TwyneContext):
     resp.raise_for_status()
     data = resp.json()
 
+    llama_chain = _DEFILLAMA_CHAIN.get(ctx.chain.chain_id, ctx.chain.name)
     chain_tvls = data.get("currentChainTvls", {})
-    eth_tvl = chain_tvls.get("Ethereum", 0)
-    borrowed = chain_tvls.get("borrowed", 0)
+    eth_tvl = chain_tvls.get(llama_chain, 0)
+    # Mainnet keeps its historical aggregate "borrowed" key; other chains use "<Chain>-borrowed".
+    borrowed = chain_tvls.get("borrowed", 0) if llama_chain == "Ethereum" else chain_tvls.get(f"{llama_chain}-borrowed", 0)
 
     # Extract latest token breakdown
     tokens_usd = []
-    chain_detail = data.get("chainTvls", {}).get("Ethereum", {})
+    chain_detail = data.get("chainTvls", {}).get(llama_chain, {})
     usd_entries = chain_detail.get("tokensInUsd", [])
     native_entries = chain_detail.get("tokens", [])
 
@@ -186,7 +191,7 @@ def tvl(ctx: TwyneContext):
     else:
         output_kv(
             [
-                ("TVL (Ethereum)", format_usd(eth_tvl)),
+                (f"TVL ({llama_chain})", format_usd(eth_tvl)),
                 ("Borrowed", format_usd(borrowed)),
             ],
             title="Twyne Protocol TVL (DefiLlama)",
@@ -241,6 +246,8 @@ def ext_ltvs(ctx: TwyneContext):
                 elif iv_name.startswith("aave_"):
                     pool = aave_v3_pool()
                     pairs = _fetch_aave_pairs(iv_name, iv_addr, vm, pool, block)
+                elif iv_name.startswith("morpho_"):
+                    pairs = allowed_pairs(iv_name, iv_addr, block, vm)
                 else:
                     pairs = [{"iv_name": iv_name, "error": f"Unknown protocol prefix for {iv_name}"}]
                 all_pairs.extend(pairs)

@@ -34,11 +34,21 @@ HF_INFINITE = 10**24  # positionStats returns ~uint256.max for zero-debt; clamp 
 
 _ABI_DIR = Path(__file__).parent / "abis"
 
-# HealthStatViewer (v1.0.5+) — source of truth: tech-notes
-# public-launch-addresses/TwyneAddresses_current_1.json
-DEFAULT_HSV = {
-    1: "0xf88A9f96fa0798Ed322CD0e60435e4F111059DEf",
-}
+def default_hsv(chain_id: int) -> str | None:
+    """HealthStatViewer from the chain's bundled address registry (mirrors tech-notes)."""
+    from .chains import CHAINS
+    from .contracts import _load_addresses
+
+    spec = CHAINS.get(chain_id)
+    return _load_addresses(spec).get("healthStatViewer") if spec else None
+
+
+def _registry_get(chain_id: int, key: str) -> str | None:
+    from .chains import CHAINS
+    from .contracts import _load_addresses
+
+    spec = CHAINS.get(chain_id)
+    return _load_addresses(spec).get(key) if spec else None
 
 # Foundry may install under ~/.config/.foundry or ~/.foundry depending on env.
 _FOUNDRY_BIN_CANDIDATES = (
@@ -98,6 +108,11 @@ def resolve_fork_url(chain_id: int) -> str:
         return val
     if chain_id == 1:
         return "https://ethereum-rpc.publicnode.com"
+    from .chains import CHAINS
+
+    spec = CHAINS.get(chain_id)
+    if spec and spec.default_rpc:
+        return spec.default_rpc
     raise RuntimeError(f"No RPC URL for chain {chain_id}. Set RPC_URL_{chain_id} or pass --fork-url.")
 
 
@@ -250,13 +265,16 @@ class CVState:
     ext_hf: float
     collateral_symbol: str
     debt_symbol: str
+    # Unit of the *_usd fields: "USD" for Euler/Aave; the loan token (e.g. USDG) for Morpho,
+    # whose lens values come from the market oracle, not a USD feed.
+    value_unit: str = "USD"
 
     @property
     def liquidatable(self) -> bool:
         return self.in_hf < 1.0
 
     @classmethod
-    def from_raw(cls, raw, *, coll_dec, coll_sym, debt_dec, debt_sym) -> "CVState":
+    def from_raw(cls, raw, *, coll_dec, coll_sym, debt_dec, debt_sym, value_unit: str = "USD") -> "CVState":
         (c_nat, c_usd, r_nat, r_usd, b_nat, b_usd, liq_t, ltv_t, liq_e, ltv_e, ext_hf, in_hf, max_liq_t) = raw
         cdiv, ddiv = 10**coll_dec, 10**debt_dec
         return cls(
@@ -275,6 +293,7 @@ class CVState:
             ext_hf=ext_or_inf(ext_hf),
             collateral_symbol=coll_sym,
             debt_symbol=debt_sym,
+            value_unit=value_unit,
         )
 
 
@@ -284,7 +303,8 @@ def ext_or_inf(hf_raw: int) -> float:
     return float("inf") if val >= HF_INFINITE else val
 
 
-def read_cv_state(rpc_url: str, hsv_addr: str, cv_addr: str, block: str | int = "latest") -> CVState:
+def read_cv_state(rpc_url: str, hsv_addr: str, cv_addr: str, block: str | int = "latest",
+                  chain_id: int = 1) -> CVState:
     w3 = _w3(rpc_url)
     cv = w3.to_checksum_address(cv_addr)
     hsv = w3.eth.contract(address=w3.to_checksum_address(hsv_addr), abi=_load_abi("HealthStatViewer"))
@@ -295,7 +315,11 @@ def read_cv_state(rpc_url: str, hsv_addr: str, cv_addr: str, block: str | int = 
     debt_token = cvc.functions.targetAsset().call(block_identifier=block)
     coll_sym, coll_dec = _erc20_meta(w3, coll_token)
     debt_sym, debt_dec = _erc20_meta(w3, debt_token)
-    return CVState.from_raw(raw, coll_dec=coll_dec, coll_sym=coll_sym, debt_dec=debt_dec, debt_sym=debt_sym)
+    morpho = _registry_get(chain_id, "morpho")
+    target = cvc.functions.targetVault().call(block_identifier=block)
+    unit = debt_sym if morpho and str(target).lower() == morpho.lower() else "USD"
+    return CVState.from_raw(raw, coll_dec=coll_dec, coll_sym=coll_sym, debt_dec=debt_dec, debt_sym=debt_sym,
+                            value_unit=unit)
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +447,14 @@ def load_tx_file(path: str) -> dict:
     return raw
 
 
+def _state_json(state: CVState) -> dict:
+    """asdict(); a non-USD unit (Morpho: the loan token) renames *_usd → *_value."""
+    data = asdict(state)
+    if state.value_unit != "USD":
+        data = {(k[:-4] + "_value" if k.endswith("_usd") else k): v for k, v in data.items()}
+    return data
+
+
 def simulate(
     *,
     cv_address: str,
@@ -435,7 +467,7 @@ def simulate(
     """Run the full before→execute→after pipeline. Returns a result dict."""
     chain_id = int(tx.get("chainId", 1))
     if hsv_address is None:
-        hsv_address = DEFAULT_HSV.get(chain_id)
+        hsv_address = default_hsv(chain_id)
         if hsv_address is None:
             raise RuntimeError(f"No HealthStatViewer known for chain {chain_id}; pass --hsv")
     if attach_rpc is None and fork_url is None:
@@ -443,9 +475,9 @@ def simulate(
 
     with AnvilFork(fork_url, block=block, attach_rpc=attach_rpc) as fork:
         fork_block = fork.block_number
-        before = read_cv_state(fork.rpc_url, hsv_address, cv_address, "latest")
+        before = read_cv_state(fork.rpc_url, hsv_address, cv_address, "latest", chain_id)
         exec_result = execute_calldata(fork, tx)
-        after = read_cv_state(fork.rpc_url, hsv_address, cv_address, "latest")
+        after = read_cv_state(fork.rpc_url, hsv_address, cv_address, "latest", chain_id)
 
     return {
         "cv": cv_address,
@@ -454,8 +486,8 @@ def simulate(
         "fork_block": fork_block,
         "tx": {"to": tx.get("to"), "from": tx.get("from"), "value": tx.get("value", 0)},
         "exec": asdict(exec_result),
-        "before": asdict(before),
-        "after": asdict(after),
+        "before": _state_json(before),
+        "after": _state_json(after),
         "_before_obj": before,
         "_after_obj": after,
         "_exec_obj": exec_result,
@@ -497,8 +529,13 @@ def render_report(result: dict) -> str:
         lines.append(f"  ✅ TX SUCCEEDS · gas {gas}")
     lines.append("")
 
+    vu = before.value_unit
+
     def num(b, a, unit, *, money=False):
-        if money:
+        if money and vu != "USD":
+            bs, as_ = f"{b:,.2f} {vu}", f"{a:,.2f} {vu}"
+            ds_ = f"{a - b:+,.2f}"
+        elif money:
             bs, as_ = f"${b:,.2f}", f"${a:,.2f}"
             d = a - b
             ds_ = f"{d:+,.2f}"
@@ -513,11 +550,12 @@ def render_report(result: dict) -> str:
 
     rows: list[tuple[str, str, str, str]] = []
     rows.append(("C  (collateral)", *num(before.collateral_native, after.collateral_native, cs)))
-    rows.append(("   collateral $", *num(before.collateral_usd, after.collateral_usd, "", money=True)))
+    money_label = "$" if vu == "USD" else f"({vu})"
+    rows.append((f"   collateral {money_label}", *num(before.collateral_usd, after.collateral_usd, "", money=True)))
     rows.append(("C_LP (reserved)", *num(before.reserved_native, after.reserved_native, cs)))
-    rows.append(("   reserved $", *num(before.reserved_usd, after.reserved_usd, "", money=True)))
+    rows.append((f"   reserved {money_label}", *num(before.reserved_usd, after.reserved_usd, "", money=True)))
     rows.append(("B  (borrow)", *num(before.borrow_native, after.borrow_native, ds)))
-    rows.append(("   borrow $", *num(before.borrow_usd, after.borrow_usd, "", money=True)))
+    rows.append((f"   borrow {money_label}", *num(before.borrow_usd, after.borrow_usd, "", money=True)))
     rows.append(("LTV_t  (B/C)", *pct(before.twyne_ltv_pct, after.twyne_ltv_pct)))
     rows.append(("~LTV_t (cap)", *pct(before.twyne_liq_ltv_pct, after.twyne_liq_ltv_pct)))
     rows.append(("LTV_e", *pct(before.external_ltv_pct, after.external_ltv_pct)))
