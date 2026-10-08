@@ -75,7 +75,7 @@ For each action, here are the parameters you need. If any are missing from the u
 |-----------|----------------|-------------------|
 | Collateral token | "What collateral do you want to use?" | wstETH (most common), WETH. See Known Intermediate Vaults below for what's supported. |
 | Debt token | "What do you want to borrow?" | WETH, USDC, etc. Must be available as a target vault on Euler/Aave. |
-| Protocol | "Euler or Aave?" | Euler (default, `--vault-type 0`) supports more pairs. Aave (`--vault-type 1`) requires `--target-asset`. |
+| Protocol | "Euler or Aave?" (mainnet) | Euler (`--protocol euler`) supports more pairs. Aave (`--protocol aave`) requires `--target-asset`. On Arbitrum (`--chain arbitrum`) the only family is **Morpho**: no target vault, the market comes from the IV. |
 | Deposit amount | "How much collateral are you depositing?" | In human units (e.g. `2.0` = 2 wstETH). |
 | Borrow amount | "Do you want to borrow immediately, or just deposit for now?" | Optional. Can borrow later via `tx collateral borrow`. |
 | Liquidation LTV | "What liquidation LTV do you want?" | **You will query the on-chain max** via `twyne protocol overview` before giving the command. The max varies per collateral/debt pair. If the user doesn't specify, you will use the on-chain max. If they specify one, you verify it doesn't exceed the max. Higher = more leverage but less safety margin. Explain the tradeoff with the actual on-chain max as the ceiling. |
@@ -108,6 +108,8 @@ uv sync                              # install dependencies
 uv run twyne config set-rpc <url>    # persist RPC (or export RPC_URL=<url>)
 ```
 
+Arbitrum (`--chain arbitrum`, Twyne-on-Morpho): set `RPC_URL_42161` or `twyne config set-rpc --chain arbitrum <url>`. Swap commands there (zap deposits, leverage, deleverage, close) need the **user's own** `ENSO_API_KEY` (env var, `./.env`, or `~/.config/twyne/.env` with mode 600). The CLI ships no key; never put one in a repo. If the key is missing, the command prints how to get one.
+
 Transaction commands need a signer: `--account <alias>` (Ape keyfile) or `--private-key <key>` (or `$PRIVATE_KEY` env var).
 
 ## Command Quick Reference
@@ -130,6 +132,9 @@ twyne tx factory open-position <iv> <target-vault> --deposit <amt> [--borrow <am
   # --deposit is in underlying units (WETH, wstETH), not receipt tokens
   # For Aave: add --vault-type 1 --target-asset <debt-token>
 
+# Arbitrum / Morpho: no target vault; --deposit is the raw collateral (syrupUSDG)
+twyne --chain arbitrum tx factory open-position <morpho-iv> --deposit <amt> [--borrow <amt>] --ltv <bps> [--token-in <token>] --account <key>
+
 # Close (atomic: deleverage + withdraw all)
 twyne tx operators close-position <vault> [--slippage 1.0] --account <key>
 ```
@@ -149,6 +154,7 @@ twyne tx collateral liquidate <vault>                     # liquidate unhealthy 
 ### Transactions — Credit LP
 ```bash
 twyne tx credit deposit <iv> <amount> --protocol euler    # deposit underlying into IV
+twyne --chain arbitrum tx credit deposit <morpho-iv> <amount>  # Morpho IV: raw syrupUSDG, no wrapper
 twyne tx credit deposit-atokens <iv> <amount>             # deposit Aave aTokens
 twyne tx credit withdraw <iv> <amount>
 twyne tx credit redeem <iv> <shares>
@@ -159,7 +165,10 @@ twyne tx credit redeem <iv> <shares>
 twyne tx operators leverage <vault> <amount>              # flash loan + swap to increase position
 twyne tx operators deleverage <vault> <amount> [--slippage 1.0]
 twyne tx operators teleport <source-vault> <target-vault>
+twyne --chain arbitrum tx operators teleport <vault>      # Morpho: move your Morpho Blue position into <vault>
 ```
+
+On Arbitrum `--protocol` is detected from the vault (Morpho). Leverage `<amount>` is the loan-token (USDG) flash loan; Morpho flash loans are capped by what the Morpho singleton holds, and the CLI refuses a larger amount.
 
 ### What Operator Commands Do
 
@@ -171,14 +180,14 @@ When giving a user an operator command (anything beyond simple deposit/withdraw/
 | `leverage` | "This will flash-borrow debt tokens, swap them into your collateral token, deposit the collateral, and borrow to repay the flash loan — all atomically." |
 | `deleverage` | "This will flash-borrow collateral tokens, repay a portion of your debt, withdraw collateral, and repay the flash loan — reducing your leverage." |
 | `teleport` | "This will move your position from one collateral vault to another (e.g. migrating between IVs or target vaults) in a single atomic transaction." |
-| `migrate-position` | "This will migrate an existing Euler or Aave position into Twyne by creating a collateral vault and moving your assets atomically." |
+| `migrate-position` | "This will migrate an existing Euler, Aave or (Arbitrum) Morpho Blue position into Twyne by creating a collateral vault and moving your assets atomically." For Morpho also say: "Your wallet first authorizes the teleport operator on Morpho (separate tx), and the CLI revokes it afterwards." |
 | `open-position` | "This will create a new collateral vault, deposit your collateral, and optionally borrow — all in a single atomic EVC batch." |
 
 These explanations are **required** even in Mode 1 (Direct Execution). Simple operations (deposit, withdraw, borrow, repay, set-ltv) do not need explanations.
 
 ### Transactions — Migration
 ```bash
-twyne tx discover-positions <wallet>                      # find migratable Euler/Aave positions
+twyne tx discover-positions <wallet>                      # find migratable Euler/Aave (mainnet) or Morpho (Arbitrum) positions
 twyne tx migrate-position <wallet> --position <n> --ltv <bps>
 ```
 
@@ -201,7 +210,15 @@ All `tx` commands accept: `--account`, `--private-key`, `--dry-run`, `--yes`, `-
 | euler_ewstETH | `0x7613D202Af490c3d1cE1873b0a7022a34E89815f` | wstETH | Euler |
 | aave_awstETH | `0x75029a47f28550C93Ad5A3BbD2d9b5315204B561` | wstETH | Aave |
 
+## Known Intermediate Vaults (Arbitrum, chain 42161)
+
+| Name | Address | Collateral | Loan token | Protocol |
+|------|---------|------------|-----------|----------|
+| morpho_syrupUSDG | `0x63DaC9b214906c30E5EBf77cf774e0dCB7638Bf5` | syrupUSDG | USDG | Morpho Blue |
+
 ## Key Facts
+
+- **Morpho values are USDG, not USD.** For Morpho vaults, `vault info`/`health`/`user` report values in the loan token (`value_unit: "USDG"`), priced by the market oracle. Say "USDG", never "$", and do not convert to USD unless the user asks (then state the 1 USDG = 1 USD assumption).
 
 - Amounts are human-readable by default (1.0 = 1 token). `--raw` for wei.
 - LTV is in basis points: 8500 = 85%, 9300 = 93%.
