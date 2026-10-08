@@ -6,6 +6,11 @@
         "name": "_aavePool",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "_morpho",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "nonpayable"
@@ -117,6 +122,19 @@
   },
   {
     "type": "function",
+    "name": "morpho",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "positionStats",
     "inputs": [
       {
@@ -192,9 +210,9 @@
             "internalType": "uint256"
           },
           {
-            "internalType": "uint16",
             "name": "maxTwyneLTV",
-            "type": "uint16"
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }

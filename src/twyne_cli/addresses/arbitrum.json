@@ -1,0 +1,43 @@
+{
+  "chainId": 42161,
+  "safe": "0x8C54cb62900Ec252E7992C85a5b7078A8AF4Fd7F",
+  "evc": "0xef39D6493884C4C84D38a4bFF879Ce16CEdE702a",
+  "vaultManager": "0x01E93F81E481877a61888544821eD7fA92b0ADEe",
+  "vaultManagerImpl": "0xE04157a3bA20976C582FCF6351beEac063A85eAd",
+  "collateralVaultFactory": "0xb85f30DA4738F11fD94C1f7E6cd69d4aB41C0832",
+  "collateralVaultFactoryImpl": "0x5c596b47A02191436C9D2020a6b32f5Be06FA975",
+  "GenericFactory": "0x2Ff808ea1716D77cAE91d85FeEEEf74baAC85106",
+  "healthStatViewer": "0x001AE501597CbCdfAC7673ca33a09D600C504818",
+  "intermediateVaults": {
+    "morpho_syrupUSDG": "0x63DaC9b214906c30E5EBf77cf774e0dCB7638Bf5"
+  },
+  "beacons": {
+    "morpho": "0x42773937c5B97521A87f001AfDbCe53976Fb8694"
+  },
+  "operators": {
+    "morphoLeverageOperator": "0x48b21c492DF5359C433381CC2557072d5ba3fD4E",
+    "morphoDeleverageOperator": "0x51Cadf17943D56971b1AC46fbb09986Ece54DE9A",
+    "morphoTeleportOperator": "0xFf144562f9996AdFf0f2feC080bd464B3e181ca4",
+    "morphoDebtSwapOperator": "0x8db3a8Be0584E97A8634dBEb0110dE55fe504141"
+  },
+  "assetZap": "0xc0Cc684Af1423f5cdC29CDC72BaaBE7931Bd191F",
+  "swapper": "0x6eE488A00A2ef1E2764cD7245F8a77C40060A7C7",
+  "bridgeHookTarget": "0x0d69EA02c0879d91b4fc9F099D1B710b2241BF49",
+  "morphoOracleRouter": "0x675EF95C9EBd651015b97EE7C1327d2eB20449C9",
+  "morphoCollateralVaultImplV0": "0x0209798A20D1eE69bbAc4c16F095E4e03Ba86F0f",
+  "morpho": "0x6c247b1F6182318877311737BaC0844bAa518F5e",
+  "targetVaults": {
+    "morpho": "0x6c247b1F6182318877311737BaC0844bAa518F5e"
+  },
+  "morphoMarkets": {
+    "syrupUSDG_USDG": {
+      "id": "0xfc2a80cb390c45e7e79ad24792123fbf5a96d4653db44e29646fa7af159dda7c",
+      "intermediateVault": "0x63DaC9b214906c30E5EBf77cf774e0dCB7638Bf5",
+      "loanToken": "0x004B506865409877C9fA29bfb1ebA929984B9bbC",
+      "collateralToken": "0xE1B0dC5A21b10f1634fBfbE9976fBA2Ee2e1c762",
+      "oracle": "0xA722399257215e716C8Aa084D06E4882580934ee",
+      "irm": "0x66F30587FB8D4206918deb78ecA7d5eBbafD06DA",
+      "lltv": "915000000000000000"
+    }
+  }
+}

@@ -7,11 +7,28 @@ ethereum:
       auto:
         multiplier: 1.5
     base_fee_multiplier: 1.4
+  # Custom networks ignore gas_limit in their networks.custom entry; set it here.
+  # Arbitrum's sequencer includes a tx at once, so a receipt needs no extra blocks
+  # (2 confirmations would also hang on an idle anvil fork).
+  # Gas x2: an estimate at "latest" skips the per-block interest accrual (Morpho + the
+  # intermediate vault) that the real tx pays in the next block, ~190k gas on a repay.
+  # Arbitrum charges gas used, not the limit, and L2 gas is cheap.
+  arbitrum:
+    required_confirmations: 0
+    gas_limit:
+      auto:
+        multiplier: 2.0
+    base_fee_multiplier: 1.4
 
 networks:
   custom:
     - name: megaeth
       chain_id: 4326
+      ecosystem: ethereum
+      gas_limit: auto
+      base_fee_multiplier: 1.4
+    - name: arbitrum
+      chain_id: 42161
       ecosystem: ethereum
       gas_limit: auto
       base_fee_multiplier: 1.4

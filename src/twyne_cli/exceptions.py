@@ -52,3 +52,25 @@ class EulerNotSupportedError(ChainCapabilityError):
             "Euler protocol",
             hint="This deployment is Aave-only. Use --protocol aave.",
         )
+
+
+class MorphoNotSupportedError(ChainCapabilityError):
+    """Twyne-on-Morpho contracts absent on this chain."""
+
+    def __init__(self, chain):
+        super().__init__(
+            chain,
+            "Morpho protocol",
+            hint="Twyne-on-Morpho is deployed on Arbitrum only. Use --chain arbitrum.",
+        )
+
+
+class AaveNotSupportedError(ChainCapabilityError):
+    """Twyne-on-Aave contracts absent on this chain."""
+
+    def __init__(self, chain):
+        super().__init__(
+            chain,
+            "Aave protocol",
+            hint="This deployment is Morpho-only. Use --protocol morpho.",
+        )

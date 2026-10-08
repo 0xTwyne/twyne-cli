@@ -6,6 +6,7 @@ from .contracts import (
     collateral_vault_factory,
     credit_vault,
     erc20,
+    get_address,
     target_vaults,
     uses_pair_risk,
     vault_manager,
@@ -80,6 +81,21 @@ def allowed_pairs(iv_name: str, iv_addr: str, block=None, vm=None, pool=None) ->
                 "debt_asset": debt, "debt_vault": erc20(debt).symbol(block_identifier=block),
                 "debt_vault_address": target, "emode_id": category,
                 "ext_liq_ltv_bps": liq_ltv, "ext_borr_ltv_bps": borrow_ltv,
+            })
+    elif iv_name.startswith("morpho_"):
+        from .morpho import allowed_markets
+
+        singleton = get_address("morpho")
+        for market in allowed_markets(iv_addr, block, manager):
+            pairs.append({
+                **common, **pair_risk(iv_addr, market.loan_token, block, manager),
+                "debt_asset": market.loan_token,
+                "debt_vault": erc20(market.loan_token).symbol(block_identifier=block),
+                "debt_vault_address": singleton,
+                "morpho_market_id": market.id,
+                # Morpho has one LTV per market (LLTV); it is both the borrow and the liquidation limit.
+                "ext_liq_ltv_bps": market.lltv_bps,
+                "ext_borr_ltv_bps": market.lltv_bps,
             })
     else:
         raise ValueError(f"Unknown protocol for {iv_name}.")

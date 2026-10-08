@@ -15,25 +15,18 @@ from ..contracts import (
 from ..formatting import (
     format_address,
     format_bps,
-    format_usd,
+    format_hf,
+    format_value,
+    hf_or_none,
     is_tty,
     output_json,
     output_kv,
     output_table,
+    risk_level,
 )
+from ..morpho import detect_protocol
 
-
-def _detect_protocol(cv_contract, block: int | None) -> str:
-    """Detect whether a collateral vault is Aave or Euler based."""
-    from ape.exceptions import ContractLogicError
-
-    try:
-        atoken = cv_contract.aToken(block_identifier=block)
-        if atoken and int(atoken, 16) != 0:
-            return "aave"
-        return "euler"
-    except (ContractLogicError, Exception):
-        return "euler"
+PROTOCOL_NAMES = {"euler": "Euler", "aave": "Aave V3", "morpho": "Morpho"}
 
 
 @click.group()
@@ -47,13 +40,41 @@ def vault():
 @pass_ctx
 def health(ctx: TwyneContext, address: str):
     """Show health factors for a collateral vault."""
-    click.echo(
-        "Error: HealthStatViewer contract removed in v1.0.5. "
-        "Health queries temporarily unavailable. "
-        "Use 'twyne vault info' for basic vault state.",
-        err=True,
-    )
-    raise SystemExit(1)
+    from .. import lens
+
+    ctx.connect()
+    try:
+        block = ctx.resolve_block()
+        cv = collateral_vault(address)
+        protocol = detect_protocol(cv, block)
+        unit = lens.value_unit(protocol, cv, block)
+        h = lens.health(address, block)
+        risk = risk_level(min(h["ext_hf_raw"], h["in_hf_raw"]))
+        if ctx.force_json or not is_tty():
+            output_json({
+                "vault": address,
+                "protocol": PROTOCOL_NAMES[protocol],
+                "external_hf": hf_or_none(h["ext_hf_raw"]),
+                "internal_hf": hf_or_none(h["in_hf_raw"]),
+                "external_hf_raw": str(h["ext_hf_raw"]),
+                "internal_hf_raw": str(h["in_hf_raw"]),
+                "external_debt_value": h["external_debt_value"],
+                "internal_debt_value": h["internal_debt_value"],
+                "value_unit": unit,
+                "risk": risk,
+            })
+        else:
+            output_kv([
+                ("Vault", address),
+                ("Protocol", PROTOCOL_NAMES[protocol]),
+                ("External HF", format_hf(h["ext_hf_raw"])),
+                ("Internal HF", format_hf(h["in_hf_raw"])),
+                ("External Debt", format_value(h["external_debt_value"], unit)),
+                ("Internal Debt", format_value(h["internal_debt_value"], unit)),
+                ("Risk", risk),
+            ], title="Vault Health")
+    finally:
+        ctx.disconnect()
 
 
 @vault.command()
@@ -93,10 +114,43 @@ def info(ctx: TwyneContext, address: str):
 
         user_collateral = total_assets - max_release
 
-        # Detect protocol and get USD values
-        is_aave = _detect_protocol(cv, block) == "aave"
+        # Detect protocol and value the position
+        from .. import lens
 
-        if is_aave:
+        protocol = detect_protocol(cv, block)
+        unit = "USD"
+        extra: list[tuple[str, str]] = []
+        extra_json: dict = {}
+
+        if protocol == "morpho":
+            # Morpho has no USD oracle. The lens values the position in the market loan
+            # token with the market oracle (1e18-scaled), the same math as the vault.
+            from ..contracts import morpho_collateral_vault
+            from ..morpho import market_for_vault
+
+            mcv = morpho_collateral_vault(address)
+            market = market_for_vault(mcv)
+            unit = lens.value_unit(protocol, cv, block)
+            stats = lens.position_stats(address, block)
+            collateral_in_morpho = int(mcv.collateralBalance(block_identifier=block))
+            user_coll_usd = stats["user_collateral_value"]
+            credit_usd = stats["reserved_credit_value"]
+            total_assets_usd = user_coll_usd + credit_usd
+            debt_usd = stats["borrow_value"]
+            externally_liquidated = total_assets > collateral_in_morpho
+            extra = [
+                ("Morpho Market", market.id),
+                ("External Liq LTV", format_bps(market.lltv_bps)),
+                ("Collateral in Morpho", str(collateral_in_morpho)),
+                ("Externally Liquidated", str(externally_liquidated)),
+            ]
+            extra_json = {
+                "morpho_market_id": market.id,
+                "external_liq_ltv_bps": market.lltv_bps,
+                "collateral_in_morpho_raw": str(collateral_in_morpho),
+                "externally_liquidated": externally_liquidated,
+            }
+        elif protocol == "aave":
             oracle = aave_oracle()
             pool = aave_v3_pool()
 
@@ -126,10 +180,16 @@ def info(ctx: TwyneContext, address: str):
             user_coll_usd = results2[2] / WAD
             debt_usd = results2[3] / WAD
 
-        # Operating LTV = debt / user_collateral (in USD terms)
+        # Operating LTV = debt / user_collateral (same value unit on both sides)
         operating_ltv = (debt_usd / user_coll_usd * 100) if user_coll_usd > 0 else 0.0
 
-        protocol_type = "Aave V3" if is_aave else "Euler"
+        protocol_type = PROTOCOL_NAMES[protocol]
+        try:
+            h = lens.health(address, block)
+            ext_hf, in_hf = h["ext_hf_raw"], h["in_hf_raw"]
+        except Exception:
+            ext_hf = in_hf = None
+        sfx = "usd" if unit == "USD" else "value"
 
         if ctx.force_json or not is_tty():
             output_json({
@@ -142,16 +202,19 @@ def info(ctx: TwyneContext, address: str):
                 "credit_reserved_raw": str(max_release),
                 "user_collateral_raw": str(user_collateral),
                 "debt_raw": str(max_repay),
-                "total_assets_usd": total_assets_usd,
-                "credit_reserved_usd": credit_usd,
-                "user_collateral_usd": user_coll_usd,
-                "debt_usd": debt_usd,
+                f"total_assets_{sfx}": total_assets_usd,
+                f"credit_reserved_{sfx}": credit_usd,
+                f"user_collateral_{sfx}": user_coll_usd,
+                f"debt_{sfx}": debt_usd,
+                "value_unit": unit,
                 "twyne_liq_ltv_bps": twyne_liq_ltv,
                 "twyne_liq_ltv_pct": twyne_liq_ltv / 100,
                 "operating_ltv_pct": operating_ltv,
+                "external_hf": None if ext_hf is None else hf_or_none(ext_hf),
+                "internal_hf": None if in_hf is None else hf_or_none(in_hf),
                 "can_liquidate": can_liquidate,
                 "can_rebalance": can_rebalance,
-                "note": "Health factors unavailable — HealthStatViewer removed in v1.0.5",
+                **extra_json,
             })
         else:
             output_kv([
@@ -160,16 +223,17 @@ def info(ctx: TwyneContext, address: str):
                 ("Protocol", protocol_type),
                 ("Collateral Asset", asset_addr),
                 ("Borrow Asset", target_asset_addr),
+                *extra,
                 ("", ""),
-                ("User Collateral (C)", format_usd(user_coll_usd)),
-                ("Credit Reserved (C_LP)", format_usd(credit_usd)),
-                ("Total Assets (C+C_LP)", format_usd(total_assets_usd)),
-                ("Debt (B)", format_usd(debt_usd)),
+                ("User Collateral (C)", format_value(user_coll_usd, unit)),
+                ("Credit Reserved (C_LP)", format_value(credit_usd, unit)),
+                ("Total Assets (C+C_LP)", format_value(total_assets_usd, unit)),
+                ("Debt (B)", format_value(debt_usd, unit)),
                 ("", ""),
                 ("Liquidation LTV", format_bps(twyne_liq_ltv)),
                 ("Operating LTV", f"{operating_ltv:.2f}%"),
-                ("External HF", "N/A (HealthStatViewer removed)"),
-                ("Internal HF", "N/A (HealthStatViewer removed)"),
+                ("External HF", "N/A" if ext_hf is None else format_hf(ext_hf)),
+                ("Internal HF", "N/A" if in_hf is None else format_hf(in_hf)),
                 ("", ""),
                 ("Can Liquidate", str(can_liquidate)),
                 ("Can Rebalance", str(can_rebalance)),
