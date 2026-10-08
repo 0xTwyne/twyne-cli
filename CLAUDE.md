@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Twyne CLI is a Python command-line tool for querying and interacting with the Twyne credit delegation protocol. It supports read-only queries (vault health, protocol parameters, user portfolios) and write transactions (opening/closing positions, depositing, borrowing, leveraging, migrating positions) via direct RPC calls — no indexer or API dependency required.
 
-Multi-chain: `mainnet` (Ethereum, chain 1) and `megaeth` (chain 4326). MegaETH is an **Aave-V3-only** deployment with no leverage/deleverage/teleport operators; the `tx operators` group cleanly exits with `UsageError` on MegaETH while every other command works.
+Multi-chain: `mainnet` (Ethereum, chain 1), `megaeth` (chain 4326) and `arbitrum` (Arbitrum One, chain 42161). MegaETH is an **Aave-V3-only** deployment with no leverage/deleverage/teleport operators; the `tx operators` group cleanly exits with `UsageError` on MegaETH while every other command works. Arbitrum is a **Morpho-Blue-only** (Twyne-on-Morpho) 1.0.7 deployment with operators.
 
 - **Python 3.11+**, managed with **uv**
 - **Framework**: Ape (eth-ape) — provides Click CLI, multicall, contract interaction
@@ -39,7 +39,7 @@ Available on all commands:
 
 | Flag | Purpose |
 |------|---------|
-| `--chain <slug-or-id>` | Target chain (`mainnet`, `megaeth`, or chain id; default `mainnet`) |
+| `--chain <slug-or-id>` | Target chain (`mainnet`, `megaeth`, `arbitrum`, or chain id; default `mainnet`) |
 | `--rpc <url>` | RPC URL (overrides env/config for the active chain) |
 | `--json` | Force JSON output (auto-detects TTY) |
 | `--block <number>` | Query at specific historical block |
@@ -49,18 +49,21 @@ Available on all commands:
 
 ## Chain Support
 
-| Slug | Chain ID | Operators? | Euler? | Address registry |
-|------|----------|-----------|--------|------------------|
-| `mainnet` | 1 | yes | yes | `src/twyne_cli/addresses/mainnet.json` |
-| `megaeth` | 4326 | **no** | no | `src/twyne_cli/addresses/megaeth.json` |
+| Slug | Chain ID | Families | Operators? | Contracts | Swaps | Address registry |
+|------|----------|----------|-----------|-----------|-------|------------------|
+| `mainnet` | 1 | Euler, Aave | yes | 1.0.7 | Euler Swap API | `src/twyne_cli/addresses/mainnet.json` |
+| `megaeth` | 4326 | Aave | **no** | legacy | — | `src/twyne_cli/addresses/megaeth.json` |
+| `arbitrum` | 42161 | Morpho | yes | 1.0.7 | Enso (user's own key) | `src/twyne_cli/addresses/arbitrum.json` |
 
-The chain registry lives at `src/twyne_cli/chains.py`. Each `ChainSpec` carries capability flags (`supports_operators`, `supports_euler`) consulted at runtime; commands that depend on missing capabilities raise `OperatorsNotSupportedError` / `EulerNotSupportedError`, both subclasses of `ChainCapabilityError`. The `tx.operators` click group converts these into a clean `click.UsageError` (exit 2, no stack trace).
+The chain registry lives at `src/twyne_cli/chains.py`. Each `ChainSpec` carries capability flags consulted at runtime: `supports_operators`, `supports_euler`, `supports_aave`, `supports_morpho`, `legacy_contracts` (pre-1.0.7: `*Legacy` ABIs, single-key risk params) and `swap_provider` (`euler` | `enso`). Never branch on a chain id; add or read a flag. Commands that depend on missing capabilities raise `OperatorsNotSupportedError` / `EulerNotSupportedError` / `AaveNotSupportedError` / `MorphoNotSupportedError`, all subclasses of `ChainCapabilityError`; `tx` commands turn a wrong `--protocol` into a clean `click.UsageError` (exit 2).
+
+Ape config for custom networks: `gas_limit` and `required_confirmations` are read from the `ethereum.<network>` section of `ape-config.yaml`, **not** from the `networks.custom` entry. Arbitrum uses a 2.0x gas multiplier (estimates at `latest` miss the next block's interest accrual) and 0 confirmations.
 
 Adding a new chain:
 
-1. Add a `ChainSpec` entry to `CHAINS` in `chains.py`.
-2. Drop a per-chain `addresses/<slug>.json` mirroring the existing shape.
-3. Register the network in `ape-config.yaml` under `networks.custom`.
+1. Add a `ChainSpec` entry to `CHAINS` in `chains.py` (start block = the factory's first block with code).
+2. Drop a per-chain `addresses/<slug>.json` mirroring the existing shape; copy values from tech-notes only.
+3. Register the network in `ape-config.yaml` under `networks.custom`, plus an `ethereum.<slug>` section for gas and confirmations.
 4. Add fork tests under `tests/integration/<slug>/` and unit tests in `tests/test_chains.py`.
 
 ## CLI Command Reference
@@ -173,16 +176,18 @@ Account resolution: `--account` > `--private-key` flag > `$PRIVATE_KEY` env > `d
 | `teleport` | `<vault> <target-vault>` | `--protocol` | Migrate position to different debt asset |
 | `close-position` | `<vault>` | `--protocol`, `--slippage <pct>` | Fully deleverage and withdraw all |
 
-Swaps use the Euler Swap API. Default slippage: 0.5%.
+Swaps: mainnet uses the Euler Swap API; Arbitrum uses Enso routes executed by the Twyne Swapper (Generic handler, `swap.build_swap`). Default slippage: 0.5%.
+
+Morpho (Arbitrum) specifics: leverage `<amount>` is the loan-token flash loan and the swap pays the **operator** (6-arg `executeLeverage`); deleverage/close pay the operator too; close sizes the flash loan to the debt. `teleport <vault>` (no target) moves the signer's Morpho Blue position into the vault after a direct `Morpho.setAuthorization(op, true)` tx (revoked afterwards unless `--keep-authorization`). Flash loans larger than the Morpho singleton's token balance are refused up front.
 
 #### `twyne tx factory` — Vault Creation
 
 | Command | Arguments | Options | Purpose |
 |---------|-----------|---------|---------|
-| `create-vault` | `<iv> <target-vault>` | `--vault-type 0\|1`, `--ltv <bps>`, `--target-asset <addr>` | Create collateral vault |
-| `open-position` | `<iv> <target-vault>` | `--deposit <amt>`, `--borrow <amt>`, `--vault-type`, `--ltv`, `--target-asset` | Atomic create + deposit + borrow in single EVC batch |
+| `create-vault` | `<iv> [target-vault]` | `--protocol euler\|aave\|morpho` (or `--vault-type 0\|1\|2`), `--ltv <bps>`, `--target-asset <addr>`, `--market-id <id>` | Create collateral vault |
+| `open-position` | `<iv> [target-vault]` | `--deposit <amt>`, `--borrow <amt>`, `--protocol`, `--ltv`, `--target-asset`, `--market-id`, `--token-in` | Atomic create + deposit + borrow in single EVC batch |
 
-`--vault-type`: 0 = Euler (default), 1 = Aave V3. `open-position` predicts the vault address via simulation.
+Family: `--protocol`, else `--vault-type` (0 = Euler, 1 = Aave V3, 2 = Morpho), else the IV's registry-name prefix. Morpho: target vault defaults to the Morpho singleton; the market is the IV's only allowed market (`morphoMarkets` in the registry, checked with `isAllowedMorphoMarket`) unless `--market-id`. `open-position` predicts the vault address via simulation.
 
 #### `twyne tx batch` — EVC Batch Execution
 
@@ -246,8 +251,8 @@ CLI (Click via Ape)
 
 ### Data Files (bundled inside package)
 
-- `src/twyne_cli/abis/` — Contract ABIs: CollateralVault, HealthStatViewer, VaultManager, EVault, EVC, ERC20, LeverageOperator, DeleverageOperator, TeleportOperator, AaveWrapper, AaveATokenWrapper, EulerWrapper
-- `src/twyne_cli/addresses/mainnet.json` — Contract addresses from tech-notes (source of truth)
+- `src/twyne_cli/abis/` — Contract ABIs: CollateralVault, HealthStatViewer (liquidation-bot PR #88 build, Morpho-aware), VaultManager, EVault, EVC, ERC20, LeverageOperator, DeleverageOperator, TeleportOperator, AaveWrapper, AaveATokenWrapper, EulerWrapper, AssetZap, Swapper (minimal), Morpho (IMorpho), MorphoOracle (minimal), MorphoCollateralVault and the three Morpho operators (twyne-contracts 1.0.7)
+- `src/twyne_cli/addresses/<chain>.json` — Contract addresses from tech-notes (source of truth). `swapper` is the Twyne Swapper the operators/AssetZap call (`SWAPPER()`), not Euler's.
 
 ## Environment Variables
 
@@ -256,6 +261,7 @@ CLI (Click via Ape)
 | `RPC_URL_<chain_id>` | Per-chain RPC endpoint (e.g., `RPC_URL_1`, `RPC_URL_4326`) |
 | `RPC_URL` | Legacy mainnet RPC endpoint (back-compat; honoured only when active chain is mainnet) |
 | `PRIVATE_KEY` | Signing key for transactions |
+| `ENSO_API_KEY` | The **user's own** Enso key for Arbitrum swaps. Read from env, `./.env`, or `~/.config/twyne/.env` (`secrets.py`); never bundled, logged or committed |
 | `TWYNE_*` | Override specific addresses from the active chain's registry (dotted keys → `_`) |
 
 ## AI Assistant Rules
@@ -269,7 +275,8 @@ CLI (Click via Ape)
 - Oracle prices: Euler uses 1e18 precision, Aave uses 1e8. Both oracles use EulerRouter ABI interface.
 - Health factors are 1e18 precision. Divide by `WAD` for display.
 - USD address for oracle queries: `0x0000000000000000000000000000000000000348`
-- Protocol detection: try `aToken()` call — Aave if exists, else Euler.
+- Protocol detection (`morpho.detect_protocol`): `targetVault() == registry morpho` → Morpho; else `aToken()` non-zero → Aave; else Euler.
+- Morpho values are in the market **loan token** (USDG), from the lens/market oracle — never USD. Output carries `value_unit`; JSON uses `*_value` keys (Euler/Aave keep `*_usd`). Use `formatting.format_value(value, unit)`, never `format_usd`, for them.
 - The `T_CollateralVaultCreated` event on CollateralVaultFactory is used to enumerate all vaults.
 - Amounts are human-readable by default (1.0 = 1 token). `--raw` for wei.
 - `max` keyword supported for repay/withdraw operations.
@@ -328,6 +335,7 @@ Tests use `uv run pytest`. Three tiers:
 
 - `tests/` — Unit tests (mock-based, no RPC required). Includes `test_chains.py` (chain registry + flag parsing), `test_megaeth_addresses.py` (per-chain address loader), `test_megaeth_operators_unsupported.py` (capability gating). Fixtures in `tests/conftest.py`.
 - `tests/integration/` — Mainnet integration tests against a real Anvil fork (port 8454). Fixtures in `tests/integration/conftest.py`.
+- `tests/integration/arbitrum/` — Arbitrum Twyne-on-Morpho fork tests (Anvil `--chain-id 42161 --port 8456`). They drive the real CLI commands with throwaway accounts funded on the fork; swap tests are skipped without `ENSO_API_KEY`. The fork's errors can echo its upstream RPC URL — the harness redacts URLs.
 - `tests/integration/megaeth/` — MegaETH integration tests. `test_smoke.py` is opt-in via `--live` and hits `https://mainnet.megaeth.com/rpc` read-only. Fork-mode tests (when added) use `anvil --fork-url https://mainnet.megaeth.com/rpc --chain-id 4326 --port 8455`.
 
 Custom flags:

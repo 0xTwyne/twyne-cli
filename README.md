@@ -40,6 +40,7 @@ the package is reviewed and added to the allowlist in `.github/workflows/check.y
 twyne init                                   # guided setup: chain, RPC, account
 twyne protocol overview                      # Ethereum mainnet (default)
 twyne --chain megaeth protocol overview      # MegaETH (chain 4326)
+twyne --chain arbitrum protocol overview     # Arbitrum One (chain 42161, Twyne-on-Morpho)
 twyne vault list                             # list collateral vaults
 twyne vault health <vault-address>           # check a vault's health
 ```
@@ -50,6 +51,9 @@ twyne vault health <vault-address>           # check a vault's health
 |------|----------|-----------|--------|-------------|
 | `mainnet` | 1 | yes | yes | Ape default (MEV Blocker) |
 | `megaeth` | 4326 | **no** | no | `https://mainnet.megaeth.com/rpc` |
+| `arbitrum` | 42161 | yes | no | `https://arb1.arbitrum.io/rpc` |
+
+Vault families per chain: mainnet = Euler + Aave V3, MegaETH = Aave V3, Arbitrum = **Morpho Blue** only.
 
 MegaETH is currently an **Aave-V3-only** Twyne deployment with no leverage/deleverage/teleport operators. The `tx operators ...` group exits cleanly with `UsageError` on MegaETH; the rest of the CLI (read queries, collateral vault ops, credit vault ops, factory, batch, discover/migrate against Aave) works normally.
 
@@ -62,6 +66,14 @@ twyne --chain mainnet protocol overview             # explicit mainnet
 ```
 
 Default chain is `mainnet`; override with `twyne config set-default-chain megaeth`.
+
+### Twyne-on-Morpho (Arbitrum)
+
+- A Morpho collateral vault holds the raw collateral token (syrupUSDG) inside Morpho Blue and borrows the market loan token (USDG). The vault family is detected from `targetVault() == Morpho`; `--protocol` is optional everywhere.
+- **Values are in the loan token, not USD.** Morpho has no USD oracle; `vault info`, `vault health`, `user` and `vault simulate` value Morpho positions with the market oracle and label them `USDG` (JSON: `*_value` + `value_unit`). They never print `$` for a Morpho vault.
+- Markets: the allowed market of each intermediate vault is listed in `addresses/arbitrum.json` (`morphoMarkets`) and checked on chain with `VaultManager.isAllowedMorphoMarket`.
+- Swaps (zap deposits, leverage, deleverage, close) use **Enso** routes executed by the Twyne Swapper. Enso needs an API key — see [Enso API key](#enso-api-key-arbitrum-swaps).
+- Morpho flash loans are capped by what the Morpho singleton holds; the CLI refuses a larger leverage/deleverage up front.
 
 ## RPC Configuration
 
@@ -101,13 +113,23 @@ twyne config set-account <alias>       # save default signing account
 twyne config get-account               # show configured account
 ```
 
+## Enso API key (Arbitrum swaps)
+
+Commands that swap on Arbitrum (`tx collateral deposit-underlying`, `tx credit deposit-underlying`, `tx factory open-position --token-in`, `tx operators leverage|deleverage|close-position`) build their route with [Enso](https://developers.enso.build). **twyne-cli does not ship an Enso key — bring your own.** The CLI looks for `ENSO_API_KEY` in this order and never prints it:
+
+1. the environment (`export ENSO_API_KEY=...`, or inject it with a secret manager, e.g. `op run --env-file=<file with an op:// ref> -- twyne ...`);
+2. `.env` in the current directory;
+3. `~/.config/twyne/.env` (create with `chmod 600`).
+
+Never commit the key. `.env` files are git-ignored in this repo. Free Enso keys are limited to about 1 request/second; the CLI retries on HTTP 429.
+
 ## Global Flags
 
 Available on all commands:
 
 | Flag | Purpose |
 |------|---------|
-| `--chain <slug-or-id>` | Target chain (`mainnet`, `megaeth`, or chain id; default `mainnet`) |
+| `--chain <slug-or-id>` | Target chain (`mainnet`, `megaeth`, `arbitrum`, or chain id; default `mainnet`) |
 | `--rpc <url>` | RPC URL (overrides env/config for the active chain) |
 | `--json` | Force JSON output |
 | `--block <number>` | Query at specific historical block |
@@ -176,7 +198,7 @@ Shared transaction options:
 
 ```bash
 twyne tx collateral deposit <vault> <amount>
-twyne tx collateral deposit-underlying <vault> <amount>
+twyne tx collateral deposit-underlying <vault> <amount> [--token-in <addr>] [--slippage <pct>]
 twyne tx collateral withdraw <vault> <amount> [--receiver <addr>]
 twyne tx collateral redeem-underlying <vault> <amount> [--receiver <addr>]
 twyne tx collateral borrow <vault> <amount> [--receiver <addr>]
@@ -186,44 +208,54 @@ twyne tx collateral liquidate <vault>
 twyne tx collateral skim <vault>
 ```
 
+Morpho vaults: `deposit` takes the raw collateral (syrupUSDG); `deposit-underlying` zaps any token (default: the loan token, USDG) through AssetZap + an Enso swap; `redeem-underlying` is not available (use `withdraw`).
+
 #### Credit vault operations (CLP / intermediate vault)
 
 ```bash
-twyne tx credit deposit <iv-address> <amount> [--protocol euler|aave]
-twyne tx credit deposit-underlying <iv-address> <amount> [--protocol euler|aave]
+twyne tx credit deposit <iv-address> <amount> [--protocol euler|aave|morpho]
+twyne tx credit deposit-underlying <iv-address> <amount> [--protocol euler|aave|morpho] [--token-in <addr>]
 twyne tx credit deposit-atokens <iv-address> <amount>
 twyne tx credit withdraw <iv-address> <amount> [--receiver <addr>]
 twyne tx credit redeem <iv-address> <shares> [--receiver <addr>]
 ```
 
+`--protocol` defaults to the family in the IV's registry name. A Morpho intermediate vault holds the raw collateral token, so `credit deposit` is a plain ERC-4626 deposit (no wrapper) and `deposit-atokens` is unavailable.
+
 #### Operator actions (leverage, deleverage, teleport, close)
 
 ```bash
-twyne tx operators leverage <vault> <amount> [--protocol euler|aave] [--slippage <pct>]
-twyne tx operators deleverage <vault> <amount> [--protocol euler|aave] [--slippage <pct>]
+twyne tx operators leverage <vault> <amount> [--protocol euler|aave|morpho] [--slippage <pct>]
+twyne tx operators deleverage <vault> <amount> [--protocol euler|aave|morpho] [--slippage <pct>]
 twyne tx operators teleport <vault> <target-vault> [--protocol euler|aave]
-twyne tx operators close-position <vault> [--protocol euler|aave] [--slippage <pct>]
+twyne tx operators teleport <vault> [--collateral-amount <raw>] [--debt-amount <raw>] [--keep-authorization]   # Morpho
+twyne tx operators close-position <vault> [--protocol euler|aave|morpho] [--slippage <pct>]
 ```
+
+`--protocol` defaults to the vault's detected family. Morpho specifics: leverage `<amount>` is the loan-token flash loan (USDG); the swap output goes to the operator, which supplies it to the vault. Morpho teleport moves your direct Morpho Blue position (same market) into the vault: the CLI first sends `Morpho.setAuthorization(teleportOperator, true)` from your wallet (Morpho checks `msg.sender`, so this cannot go through the EVC) and revokes it afterwards unless `--keep-authorization`. Morpho close-position sizes the flash loan to the debt, so the rest of the collateral comes back as collateral.
 
 #### Factory (vault creation)
 
 ```bash
-twyne tx factory create-vault <intermediate-vault> <target-vault> [--vault-type 0|1] [--ltv <bps>] [--target-asset <addr>]
-twyne tx factory open-position <intermediate-vault> <target-vault> --deposit <amount> [--borrow <amount>] [--vault-type 0|1] [--ltv <bps>] [--target-asset <addr>]
+twyne tx factory create-vault <intermediate-vault> <target-vault> [--protocol euler|aave|morpho] [--ltv <bps>] [--target-asset <addr>]
+twyne tx factory open-position <intermediate-vault> <target-vault> --deposit <amount> [--borrow <amount>] [--protocol ...] [--ltv <bps>] [--target-asset <addr>]
+
+# Morpho (Arbitrum): no target vault (the Morpho singleton), market from the registry
+twyne --chain arbitrum tx factory open-position <morpho-iv> --deposit 100 --borrow 50 --ltv 9500 [--market-id <id>] [--token-in <addr>]
 ```
 
 `open-position` atomically creates a collateral vault, deposits collateral, and optionally borrows in a single EVC batch. The vault address is predicted via simulation. `--deposit` specifies the underlying token amount (e.g. wstETH, not ewstETH). For Euler vaults, the intermediate vault address is auto-resolved to the collateral asset the factory expects.
 
-`--vault-type`: 0 = Euler (default), 1 = Aave V3.
+`--vault-type` (alias of `--protocol`): 0 = Euler, 1 = Aave V3, 2 = Morpho. Without either, the family comes from the IV's registry name. Morpho vaults are created with `createMorphoCollateralVault(iv, morpho, marketParams, liqLTV)`; the CLI checks `isAllowedMorphoMarket` first.
 
 #### Position discovery and migration
 
 ```bash
-twyne tx discover-positions <wallet> [--protocol euler|aave]   # find migratable positions
-twyne tx migrate-position <wallet> --position-num <n> [--protocol euler|aave] [--ltv <bps>]
+twyne tx discover-positions <wallet> [--protocol euler|aave|morpho]   # find migratable positions
+twyne tx migrate-position <wallet> --position <n> [--protocol euler|aave|morpho] [--ltv <bps>] [--keep-authorization]
 ```
 
-`discover-positions` scans Euler V2 sub-accounts or Aave V3 for single-collateral, single-debt positions that can be migrated to Twyne.
+`discover-positions` scans the families of the active chain: Euler V2 sub-accounts, Aave V3, or (Arbitrum) Morpho Blue positions in markets that a Twyne IV allows. Morpho migration creates the vault and teleports the whole position in one EVC batch, after the Morpho authorization above; sign with the wallet that owns the position.
 
 #### EVC batch execution
 
@@ -276,6 +308,7 @@ uv sync
 uv run pytest tests/                            # unit tests (mainnet + MegaETH)
 uv run pytest tests/integration/                # mainnet fork integration (Anvil on 8454)
 uv run pytest tests/integration/megaeth/ --live # MegaETH live read-only smoke
+uv run pytest tests/integration/arbitrum/       # Arbitrum Morpho fork flows (Anvil on 8456)
 uv run ruff check src/ tests/
 ```
 
@@ -283,6 +316,12 @@ MegaETH fork tests (when added later) start Anvil with:
 
 ```bash
 anvil --fork-url https://mainnet.megaeth.com/rpc --chain-id 4326 --port 8455
+```
+
+Arbitrum fork tests drive the real CLI commands with throwaway accounts funded on the fork. Swap tests need your own `ENSO_API_KEY` and are skipped without it:
+
+```bash
+anvil --fork-url "$RPC_URL_42161" --chain-id 42161 --port 8456
 ```
 
 The `--live` flag opts into read-only RPC tests against `https://mainnet.megaeth.com/rpc`. Without `--live`, all live-tagged tests are skipped.
