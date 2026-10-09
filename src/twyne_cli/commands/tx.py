@@ -35,6 +35,7 @@ from ..discover import (
     discover_aave_positions,
     discover_all_positions,
     discover_euler_positions,
+    discover_morpho_positions,
 )
 from ..formatting import format_address
 from ..swap import extract_multicall_data, get_swap_quote
@@ -49,16 +50,90 @@ from ..transactions import (
     simulate_tx,
 )
 
+PROTOCOL_CHOICE = click.Choice(["euler", "aave", "morpho"])
+MORPHO = 2  # internal vault-family id next to discover.EULER_V2 (0) / AAVE_V3 (1)
+_VAULT_TYPE_PROTOCOL = {0: "euler", 1: "aave", 2: "morpho"}
+
 
 def _check_protocol_supported(protocol: str | None) -> None:
-    """Raise UsageError if --protocol euler is selected on a non-Euler chain."""
-    if protocol == "euler":
-        chain = active_chain()
-        if not chain.supports_euler:
-            raise click.UsageError(
-                f"Euler protocol is not available on {chain.name} (chain {chain.chain_id}). "
-                "This deployment is Aave-only — use --protocol aave."
-            )
+    """Raise UsageError if --protocol names a vault family the active chain does not have."""
+    chain = active_chain()
+    supported = {"euler": chain.supports_euler, "aave": chain.supports_aave, "morpho": chain.supports_morpho}
+    if protocol and not supported.get(protocol, False):
+        available = [p for p, ok in supported.items() if ok]
+        hint = f" This deployment is {'/'.join(a.capitalize() for a in available)}-only — use --protocol {available[0]}." if available else ""
+        raise click.UsageError(
+            f"{protocol.capitalize()} protocol is not available on {chain.name} (chain {chain.chain_id}).{hint}"
+        )
+
+
+def _chain_default_protocol() -> str:
+    chain = active_chain()
+    if chain.supports_euler:
+        return "euler"
+    if chain.supports_aave:
+        return "aave"
+    return "morpho"
+
+
+def _protocol_for_iv(iv_address: str, protocol: str | None) -> str:
+    """--protocol if given, else the registry name prefix of the IV, else the chain default."""
+    from ..contracts import intermediate_vaults
+
+    if protocol:
+        _check_protocol_supported(protocol)
+        return protocol
+    for name, addr in intermediate_vaults().items():
+        if addr.lower() == iv_address.lower():
+            prefix = name.split("_", 1)[0]
+            if prefix in ("euler", "aave", "morpho"):
+                return prefix
+    return _chain_default_protocol()
+
+
+def _protocol_for_cv(cv, protocol: str | None) -> str:
+    """--protocol if given (must match the vault), else the vault's detected family."""
+    from ..morpho import detect_protocol
+
+    detected = detect_protocol(cv)
+    if protocol and protocol != detected:
+        raise click.UsageError(f"--protocol {protocol} does not match this vault, which is a {detected} vault.")
+    _check_protocol_supported(detected)
+    return detected
+
+
+def _simulate_confirm_send(ctx, target, fn: str, args: list, account, details, title: str,
+                           dry_run: bool, skip_confirm: bool, gas_kwargs: dict) -> None:
+    """Simulate a direct call, confirm, send, print the receipt (shared by the Morpho paths)."""
+    sim = simulate_tx(target, fn, args, sender=account)
+    if not sim["success"]:
+        click.echo(f"Simulation failed: {sim['error']}", err=True)
+        _show_verbose_error(ctx, sim)
+        raise SystemExit(1)
+    if dry_run:
+        click.echo("Dry run — simulation passed.")
+        return
+    if not confirm_prompt(title, details, skip_confirm):
+        click.echo("Cancelled.")
+        return
+    receipt = _send_tx(getattr(target, fn), args, account, gas_kwargs)
+    display_receipt(receipt)
+
+
+def _raw_int(value: str, option: str) -> int:
+    """Parse a raw-units integer option, with a usage error instead of a traceback."""
+    try:
+        return int(value)
+    except ValueError:
+        raise click.UsageError(f"{option} takes raw integer units, got {value!r}.") from None
+
+
+def _price_impact_note(swap: dict) -> None:
+    impact = swap.get("price_impact_bps")
+    if impact is not None:
+        click.echo(f"  Price impact:       {impact / 100:.2f}%")
+        if impact > 100:
+            click.echo("  Warning: price impact is above 1%. Consider a smaller size.", err=True)
 
 
 def _format_sim_address(value) -> str:
@@ -242,7 +317,7 @@ def collateral():
 @click.argument("amount")
 @tx_options
 @pass_ctx
-def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval):
+def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **gas_extra):
     """Deposit collateral token into a vault."""
     ctx.connect()
     try:
@@ -255,7 +330,7 @@ def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key
         asset_addr = cv.asset()
         if not ensure_allowance(asset_addr, vault_address, raw_amount, account,
                                 skip_confirm=skip_confirm, skip_approval=skip_approval,
-                                max_approve=max_approve):
+                                max_approve=max_approve, **_build_gas_kwargs(**gas_extra)):
             click.echo("Approval declined.")
             return
 
@@ -279,23 +354,81 @@ def deposit(ctx: TwyneContext, vault_address, amount, account_alias, private_key
             click.echo("Cancelled.")
             return
 
-        receipt = execute_through_evc(cv, "deposit", [raw_amount], account)
+        receipt = execute_through_evc(cv, "deposit", [raw_amount], account, **_build_gas_kwargs(**gas_extra))
         display_receipt(receipt)
     finally:
         ctx.disconnect()
 
 
+def _morpho_zap_deposit(ctx, cv, vault_address, amount, token_in, slippage, account, dry_run,
+                        skip_confirm, raw, max_approve, skip_approval, gas_extra) -> None:
+    """Zap ``token_in`` into a Morpho vault: AssetZap.zap (Enso swap → collateral) + skim."""
+    from ..contracts import morpho_collateral_vault
+    from ..deposits import morpho_deposit_items
+    from ..morpho import market_for_vault
+    from ..swap import build_swap
+
+    market = market_for_vault(morpho_collateral_vault(vault_address))
+    token_in = token_in or market.loan_token
+    if token_in.lower() == market.collateral_token.lower():
+        raise click.UsageError("That token is the vault collateral. Use 'tx collateral deposit' instead.")
+    token = erc20(token_in)
+    decimals, symbol = int(token.decimals()), token.symbol()
+    raw_amount = parse_amount(amount, decimals, raw=raw)
+    sender = str(account.address)
+    zap = asset_zap()
+    swap = build_swap(token_in, market.collateral_token, raw_amount, str(zap.address), sender, slippage)
+    coll = erc20(market.collateral_token)
+    coll_dec, coll_sym = int(coll.decimals()), coll.symbol()
+    click.echo(f"\nZap deposit: {vault_address}")
+    click.echo(f"  In:                 {raw_amount / 10**decimals:,.6f} {symbol}")
+    click.echo(f"  Min collateral in:  {swap['amount_out_min'] / 10**coll_dec:,.6f} {coll_sym} (after {slippage}% slippage)")
+    _price_impact_note(swap)
+    gas_kwargs = _build_gas_kwargs(**gas_extra)
+    if not ensure_allowance(token_in, str(zap.address), raw_amount, account, skip_confirm=skip_confirm,
+                            skip_approval=skip_approval or dry_run, max_approve=max_approve, **gas_kwargs):
+        click.echo("Approval declined.")
+        return
+    items = morpho_deposit_items(vault_address, market.collateral_token, raw_amount, sender, token_in, swap)
+    details = [
+        ("Vault", vault_address),
+        ("Token in", f"{amount} {symbol} (raw: {raw_amount})"),
+        ("Min collateral", f"{swap['amount_out_min'] / 10**coll_dec:,.6f} {coll_sym}"),
+        ("Swap provider", swap["provider"]),
+        ("Sender", sender),
+    ]
+    _simulate_confirm_send(ctx, evc_contract(), "batch", [items], account, details,
+                           f"Zap {amount} {symbol} into {format_address(vault_address)}",
+                           dry_run, skip_confirm, gas_kwargs)
+
+
 @collateral.command(name="deposit-underlying")
 @click.argument("vault_address", shell_complete=complete_vault_address)
 @click.argument("amount")
+@click.option("--token-in", default=None,
+              help="Morpho vaults: token to zap in (default: the market loan token). Swapped to the collateral via Enso.")
+@click.option("--slippage", type=float, default=DEFAULT_SLIPPAGE,
+              help=f"Morpho zap swap slippage in percent (default: {DEFAULT_SLIPPAGE}%)")
 @tx_options
 @pass_ctx
-def deposit_underlying(ctx: TwyneContext, vault_address, amount, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **gas_extra):
-    """Deposit the underlying ERC20 token through AssetZap and skim."""
+def deposit_underlying(ctx: TwyneContext, vault_address, amount, token_in, slippage, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **gas_extra):
+    """Deposit the underlying ERC20 token through AssetZap and skim.
+
+    Euler / Aave: the underlying of the vault's receipt token (e.g. WETH, wstETH).
+    Morpho: any token (default: the loan token, e.g. USDG), swapped to the collateral
+    through the Twyne Swapper with an Enso route. Needs your own ENSO_API_KEY.
+    """
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
+        from ..morpho import detect_protocol
+        if detect_protocol(cv) == "morpho":
+            _morpho_zap_deposit(ctx, cv, vault_address, amount, token_in, slippage, account, dry_run,
+                                skip_confirm, raw, max_approve, skip_approval, gas_extra)
+            return
+        if token_in:
+            raise click.UsageError("--token-in applies to Morpho vaults only.")
         receipt_token = str(cv.asset())
         underlying_addr = str(credit_vault(receipt_token).asset())
         decimals = int(erc20(underlying_addr).decimals())
@@ -386,6 +519,12 @@ def redeem_underlying(ctx: TwyneContext, vault_address, amount, receiver, accoun
     """Withdraw as underlying asset from a vault."""
     ctx.connect()
     try:
+        from ..morpho import detect_protocol
+        if detect_protocol(collateral_vault(vault_address)) == "morpho":
+            raise click.UsageError(
+                "Morpho vaults hold the raw collateral token, so there is no underlying to redeem. "
+                "Use 'tx collateral withdraw'."
+            )
         account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
         decimals = _get_token_decimals(cv)
@@ -635,19 +774,98 @@ def credit():
     pass
 
 
+def _morpho_credit_deposit(ctx, iv_address, amount, account, dry_run, skip_confirm, raw,
+                           max_approve, skip_approval, gas_extra) -> None:
+    """ERC-4626 deposit of the raw collateral token into a Morpho intermediate vault."""
+    iv = credit_vault(iv_address)
+    asset_addr = str(iv.asset())
+    token = erc20(asset_addr)
+    decimals, symbol = int(token.decimals()), token.symbol()
+    raw_amount = parse_amount(amount, decimals, raw=raw)
+    sender = str(account.address)
+    gas_kwargs = _build_gas_kwargs(**gas_extra)
+    if not ensure_allowance(asset_addr, iv_address, raw_amount, account, skip_confirm=skip_confirm,
+                            skip_approval=skip_approval or dry_run, max_approve=max_approve, **gas_kwargs):
+        click.echo("Approval declined.")
+        return
+    details = [
+        ("Intermediate Vault", iv_address),
+        ("Protocol", "morpho"),
+        ("Amount", f"{amount} {symbol} (raw: {raw_amount})"),
+        ("Sender", sender),
+    ]
+    _simulate_confirm_send(ctx, iv, "deposit", [raw_amount, sender], account, details,
+                           f"Deposit {amount} {symbol} into credit vault {format_address(iv_address)}",
+                           dry_run, skip_confirm, gas_kwargs)
+
+
+def _morpho_credit_zap(ctx, iv_address, amount, token_in, slippage, account, dry_run, skip_confirm,
+                       raw, max_approve, skip_approval, gas_extra) -> None:
+    """AssetZap.zap(token_in → collateral) into a Morpho IV, then IV.skim to mint shares."""
+    from ..morpho import resolve_market
+    from ..swap import build_swap
+
+    iv = credit_vault(iv_address)
+    collateral = str(iv.asset())
+    token_in = token_in or resolve_market(iv_address).loan_token
+    if token_in.lower() == collateral.lower():
+        raise click.UsageError("That token is the IV asset. Use 'tx credit deposit' instead.")
+    token = erc20(token_in)
+    decimals, symbol = int(token.decimals()), token.symbol()
+    raw_amount = parse_amount(amount, decimals, raw=raw)
+    sender = str(account.address)
+    zap = asset_zap()
+    swap = build_swap(token_in, collateral, raw_amount, str(zap.address), sender, slippage)
+    coll = erc20(collateral)
+    coll_dec, coll_sym = int(coll.decimals()), coll.symbol()
+    click.echo(f"\nZap credit deposit: {iv_address}")
+    click.echo(f"  In:                 {raw_amount / 10**decimals:,.6f} {symbol}")
+    click.echo(f"  Min {coll_sym} in:  {swap['amount_out_min'] / 10**coll_dec:,.6f} (after {slippage}% slippage)")
+    _price_impact_note(swap)
+    gas_kwargs = _build_gas_kwargs(**gas_extra)
+    if not ensure_allowance(token_in, str(zap.address), raw_amount, account, skip_confirm=skip_confirm,
+                            skip_approval=skip_approval or dry_run, max_approve=max_approve, **gas_kwargs):
+        click.echo("Approval declined.")
+        return
+    items = [
+        (str(zap.address), sender, 0,
+         zap.zap.encode_input(token_in, raw_amount, swap["swap_data"], iv_address, swap["amount_out_min"])),
+        # EVault.skim(type(uint256).max, receiver) takes the whole unaccounted balance.
+        (iv_address, sender, 0, iv.skim.encode_input(2**256 - 1, sender)),
+    ]
+    details = [
+        ("Intermediate Vault", iv_address),
+        ("Token in", f"{amount} {symbol} (raw: {raw_amount})"),
+        ("Min collateral", f"{swap['amount_out_min'] / 10**coll_dec:,.6f} {coll_sym}"),
+        ("Swap provider", swap["provider"]),
+        ("Sender", sender),
+    ]
+    _simulate_confirm_send(ctx, evc_contract(), "batch", [items], account, details,
+                           f"Zap {amount} {symbol} into credit vault {format_address(iv_address)}",
+                           dry_run, skip_confirm, gas_kwargs)
+
+
 @credit.command(name="deposit")
 @click.argument("iv_address", shell_complete=complete_iv_address)
 @click.argument("amount")
-@click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
-              help="Which wrapper to use (euler or aave)")
+@click.option("--protocol", type=PROTOCOL_CHOICE, default=None,
+              help="Vault family (default: from the IV's registry name). Euler/Aave deposit via wrapper; Morpho deposits the collateral token directly")
 @tx_options
 @pass_ctx
 def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
-    """Deposit underlying asset into an intermediate vault via wrapper."""
-    _check_protocol_supported(protocol)
+    """Deposit underlying asset into an intermediate vault via wrapper.
+
+    Morpho intermediate vaults hold the raw collateral token (e.g. syrupUSDG), so the
+    deposit is a plain ERC-4626 deposit with no wrapper.
+    """
+    protocol = _protocol_for_iv(iv_address, protocol)
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
+        if protocol == "morpho":
+            _morpho_credit_deposit(ctx, iv_address, amount, account, dry_run, skip_confirm, raw,
+                                   max_approve, skip_approval, _)
+            return
         wrapper = euler_wrapper() if protocol == "euler" else aave_wrapper()
 
         # Get decimals from the intermediate vault's asset
@@ -695,16 +913,30 @@ def credit_deposit(ctx: TwyneContext, iv_address, amount, protocol, account_alia
 @credit.command(name="deposit-underlying")
 @click.argument("iv_address", shell_complete=complete_iv_address)
 @click.argument("amount")
-@click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
-              help="Which wrapper to use (euler or aave)")
+@click.option("--protocol", type=PROTOCOL_CHOICE, default=None,
+              help="Vault family (default: from the IV's registry name)")
+@click.option("--token-in", default=None,
+              help="Morpho IVs: token to zap in (default: the market loan token), swapped to the collateral via Enso")
+@click.option("--slippage", type=float, default=DEFAULT_SLIPPAGE,
+              help=f"Morpho zap swap slippage in percent (default: {DEFAULT_SLIPPAGE}%)")
 @tx_options
 @pass_ctx
-def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
-    """Deposit underlying asset into intermediate vault (alias for deposit)."""
-    _check_protocol_supported(protocol)
+def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, token_in, slippage, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
+    """Deposit underlying asset into intermediate vault (alias for deposit).
+
+    Morpho: zaps --token-in (default: the loan token, e.g. USDG) into the IV through
+    AssetZap + an Enso swap to the collateral, then skims. Needs your own ENSO_API_KEY.
+    """
+    protocol = _protocol_for_iv(iv_address, protocol)
+    if token_in and protocol != "morpho":
+        raise click.UsageError("--token-in applies to Morpho intermediate vaults only.")
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
+        if protocol == "morpho":
+            _morpho_credit_zap(ctx, iv_address, amount, token_in, slippage, account, dry_run, skip_confirm,
+                               raw, max_approve, skip_approval, _)
+            return
         wrapper = euler_wrapper() if protocol == "euler" else aave_wrapper()
 
         cv = credit_vault(iv_address)
@@ -754,6 +986,7 @@ def deposit_underlying_credit(ctx: TwyneContext, iv_address, amount, protocol, a
 @pass_ctx
 def deposit_atokens(ctx: TwyneContext, iv_address, amount, account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
     """Deposit Aave aTokens into an intermediate vault via aToken wrapper."""
+    _check_protocol_supported("aave")
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
@@ -898,11 +1131,83 @@ def operators():
         )
 
 
+def _evc_operator_batch(evc_instance, operator_address: str, sender: str, inner: list[tuple]) -> list[tuple]:
+    """enable operator → inner items → disable operator (EVC self-calls use onBehalfOf = zero)."""
+    from ..constants import ZERO_ADDRESS
+
+    evc_addr = str(evc_instance.address)
+    return [
+        (evc_addr, ZERO_ADDRESS, 0, evc_instance.setAccountOperator.encode_input(sender, operator_address, True)),
+        *inner,
+        (evc_addr, ZERO_ADDRESS, 0, evc_instance.setAccountOperator.encode_input(sender, operator_address, False)),
+    ]
+
+
+def _morpho_leverage(ctx, vault_address, amount, slippage, underlying_deposit, account,
+                     dry_run, skip_confirm, raw, gas_extra) -> None:
+    """MorphoLeverageOperator: flash-loan the loan token, swap to collateral (paid to the
+    operator), add optional wallet collateral, skim + borrow to repay — one EVC batch."""
+    import time
+
+    from ..constants import DEFAULT_DEADLINE_OFFSET
+    from ..contracts import morpho_collateral_vault
+    from ..morpho import check_flashloan_cap, market_for_vault
+    from ..swap import build_swap
+
+    market = market_for_vault(morpho_collateral_vault(vault_address))
+    loan, coll = erc20(market.loan_token), erc20(market.collateral_token)
+    loan_dec, loan_sym = int(loan.decimals()), loan.symbol()
+    coll_dec, coll_sym = int(coll.decimals()), coll.symbol()
+    raw_flashloan = parse_amount(amount, loan_dec, raw=raw)
+    raw_user = parse_amount(underlying_deposit, coll_dec, raw=raw) if underlying_deposit != "0" else 0
+    check_flashloan_cap(market.loan_token, raw_flashloan, loan_sym, loan_dec)
+
+    op = leverage_operator("morpho")
+    sender = str(account.address)
+    deadline = int(time.time()) + DEFAULT_DEADLINE_OFFSET
+    swap = build_swap(market.loan_token, market.collateral_token, raw_flashloan, str(op.address), sender, slippage)
+    gas_kwargs = _build_gas_kwargs(**gas_extra)
+    if raw_user > 0 and not ensure_allowance(market.collateral_token, str(op.address), raw_user, account,
+                                             skip_confirm=skip_confirm,
+                                             skip_approval=bool(gas_extra.get("skip_approval")) or dry_run,
+                                             max_approve=bool(gas_extra.get("max_approve")), **gas_kwargs):
+        click.echo("Approval declined.")
+        return
+
+    # 6-param Morpho interface: (collateralVault, userCollateralAmount, flashloanAmount,
+    #   minAmountOut, deadline, swapData[])
+    leverage_data = op.executeLeverage.encode_input(
+        vault_address, raw_user, raw_flashloan, swap["amount_out_min"], deadline, swap["swap_data"]
+    )
+    evc_instance = evc_contract()
+    items = _evc_operator_batch(evc_instance, str(op.address), sender, [(str(op.address), sender, 0, leverage_data)])
+
+    click.echo(f"\nLeverage: {vault_address}")
+    click.echo(f"  Flash loan:         {raw_flashloan / 10**loan_dec:,.6f} {loan_sym}")
+    click.echo(f"  Min collateral out: {swap['amount_out_min'] / 10**coll_dec:,.6f} {coll_sym} (after {slippage}% slippage)")
+    if raw_user:
+        click.echo(f"  Extra deposit:      {raw_user / 10**coll_dec:,.6f} {coll_sym} from wallet")
+    _price_impact_note(swap)
+    details = [
+        ("Vault", vault_address),
+        ("Protocol", "morpho"),
+        ("Flash loan", f"{raw_flashloan / 10**loan_dec:,.6f} {loan_sym} (raw: {raw_flashloan})"),
+        ("Min collateral out", f"{swap['amount_out_min'] / 10**coll_dec:,.6f} {coll_sym}"),
+        ("Slippage", f"{slippage}%"),
+        ("Swap provider", swap["provider"]),
+        ("Operator", str(op.address)),
+        ("Sender", sender),
+    ]
+    _simulate_confirm_send(ctx, evc_instance, "batch", [items], account, details,
+                           f"Leverage {raw_flashloan / 10**loan_dec:,.6f} {loan_sym} on {format_address(vault_address)}",
+                           dry_run, skip_confirm, gas_kwargs)
+
+
 @operators.command()
 @click.argument("vault_address", shell_complete=complete_vault_address)
 @click.argument("amount")
-@click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
-              help="Protocol integration to use")
+@click.option("--protocol", type=PROTOCOL_CHOICE, default=None,
+              help="Protocol integration to use (default: detected from the vault)")
 @click.option("--slippage", type=float, default=DEFAULT_SLIPPAGE,
               help=f"Swap slippage tolerance (default: {DEFAULT_SLIPPAGE}%)")
 @click.option("--underlying-deposit", "underlying_deposit", default="0",
@@ -927,6 +1232,11 @@ def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
+        protocol = _protocol_for_cv(cv, protocol)
+        if protocol == "morpho":
+            _morpho_leverage(ctx, vault_address, amount, slippage, underlying_deposit, account,
+                             dry_run, skip_confirm, raw, _)
+            return
 
         # Derive token addresses from vault state
         collateral_addr = str(cv.asset())       # eVault share token (e.g. eWETH)
@@ -1058,11 +1368,103 @@ def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
         ctx.disconnect()
 
 
+def _morpho_deleverage(ctx, vault_address, raw_flashloan, max_debt, raw_withdraw, slippage, account,
+                       dry_run, skip_confirm, gas_extra, set_ltv: int | None = None) -> None:
+    """MorphoDeleverageOperator: flash-loan collateral, swap to the loan token (paid to the
+    operator), repay, withdraw collateral to settle the flash loan; leftovers go to the user.
+    ``set_ltv`` (close-position) lowers twyneLiqLTV first to release reserved credit."""
+    from ..contracts import morpho_collateral_vault
+    from ..morpho import check_flashloan_cap, market_for_vault
+    from ..swap import build_swap
+
+    mcv = morpho_collateral_vault(vault_address)
+    market = market_for_vault(mcv)
+    loan, coll = erc20(market.loan_token), erc20(market.collateral_token)
+    loan_dec, loan_sym = int(loan.decimals()), loan.symbol()
+    coll_dec, coll_sym = int(coll.decimals()), coll.symbol()
+    check_flashloan_cap(market.collateral_token, raw_flashloan, coll_sym, coll_dec)
+
+    op = deleverage_operator("morpho")
+    sender = str(account.address)
+    swap = build_swap(market.collateral_token, market.loan_token, raw_flashloan, str(op.address), sender, slippage)
+    # 5-param interface: (collateralVault, flashloanAmount, maxDebt, withdrawCollateralAmount, swapData[])
+    deleverage_data = op.executeDeleverage.encode_input(
+        vault_address, raw_flashloan, max_debt, raw_withdraw, swap["swap_data"]
+    )
+    inner = []
+    if set_ltv is not None:
+        inner.append((vault_address, sender, 0, mcv.setTwyneLiqLTV.encode_input(set_ltv)))
+    inner.append((str(op.address), sender, 0, deleverage_data))
+    evc_instance = evc_contract()
+    items = _evc_operator_batch(evc_instance, str(op.address), sender, inner)
+
+    withdraw_txt = "all withdrawable" if raw_withdraw == 2**256 - 1 else f"{raw_withdraw / 10**coll_dec:,.6f} {coll_sym}"
+    click.echo(f"\nDeleverage: {vault_address}")
+    click.echo(f"  Flash loan:         {raw_flashloan / 10**coll_dec:,.6f} {coll_sym}")
+    click.echo(f"  Min {loan_sym} out: {swap['amount_out_min'] / 10**loan_dec:,.6f} (after {slippage}% slippage)")
+    click.echo(f"  Withdraw:           {withdraw_txt}")
+    _price_impact_note(swap)
+    details = [
+        ("Vault", vault_address),
+        ("Protocol", "morpho"),
+        ("Flash loan", f"{raw_flashloan / 10**coll_dec:,.6f} {coll_sym} (raw: {raw_flashloan})"),
+        ("Max remaining debt", str(max_debt)),
+        ("Withdraw", withdraw_txt),
+        ("Slippage", f"{slippage}%"),
+        ("Swap provider", swap["provider"]),
+        ("Operator", str(op.address)),
+        ("Sender", sender),
+    ]
+    if set_ltv is not None:
+        details.append(("LiqLTV change", f"{int(mcv.twyneLiqLTV()) / 100:.2f}% -> {set_ltv / 100:.2f}%"))
+    _simulate_confirm_send(ctx, evc_instance, "batch", [items], account, details,
+                           f"Deleverage {format_address(vault_address)}", dry_run, skip_confirm,
+                           _build_gas_kwargs(**gas_extra))
+
+
+def _morpho_close_position(ctx, vault_address, slippage, account, dry_run, skip_confirm, gas_extra) -> None:
+    """Repay all debt and withdraw all collateral of a Morpho vault in one batch.
+
+    The flash loan is sized to the debt (market oracle price plus the slippage margin and
+    0.5%), not to the whole collateral, so the remaining collateral comes back as collateral.
+    """
+    from ..constants import MAXFACTOR
+    from ..contracts import morpho_collateral_vault, morpho_oracle
+    from ..morpho import market_for_vault
+
+    mcv = morpho_collateral_vault(vault_address)
+    market = market_for_vault(mcv)
+    debt = int(mcv.maxRepay())
+    if debt == 0:
+        click.echo("No debt to repay. Use 'tx collateral withdraw' instead.")
+        return
+    user_collateral = int(mcv.totalAssetsDepositedOrReserved()) - int(mcv.maxRelease())
+    price = int(morpho_oracle(market.oracle).price())  # collateral → loan token, 1e36 scaled
+    margin_bps = int(slippage * 100) + 50
+    needed = -(-debt * 10**36 // price)  # ceil: debt in collateral units
+    flashloan = needed * (MAXFACTOR + margin_bps) // MAXFACTOR
+    if flashloan > user_collateral:
+        coll = erc20(market.collateral_token)
+        dec, sym = int(coll.decimals()), coll.symbol()
+        raise click.UsageError(
+            f"The debt needs about {flashloan / 10**dec:,.6f} {sym} of collateral to swap (incl. "
+            f"{margin_bps / 100:.2f}% slippage margin), but the position holds {user_collateral / 10**dec:,.6f} {sym}. "
+            "Repay part of the debt from your wallet first ('tx collateral repay'), or use a lower --slippage."
+        )
+
+    # liqParams(iv, debtAsset) returns (externalLiqBuffer, maxTwyneLiqLTV, borrowBuffer) — same order
+    # as risk.pair_risk. Same release-credit floor as the Euler/Aave close-position path.
+    ext_liq_buffer = int(vault_manager().liqParams(market.intermediate_vault, market.loan_token)[0])
+    min_liq_ltv = (market.lltv_bps * ext_liq_buffer + MAXFACTOR - 1) // MAXFACTOR
+    _morpho_deleverage(ctx, vault_address, flashloan, 0, 2**256 - 1, slippage, account, dry_run,
+                       skip_confirm, gas_extra, set_ltv=min_liq_ltv)
+
+
 @operators.command()
 @click.argument("vault_address", shell_complete=complete_vault_address)
 @click.argument("amount")
-@click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
-              help="Protocol integration to use")
+@click.option("--protocol", type=PROTOCOL_CHOICE, default=None,
+              help="Protocol integration to use (default: detected from the vault)")
 @click.option("--slippage", type=float, default=DEFAULT_SLIPPAGE,
               help=f"Swap slippage tolerance (default: {DEFAULT_SLIPPAGE}%)")
 @click.option("--max-debt", type=int, default=0,
@@ -1083,8 +1485,14 @@ def deleverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
+        protocol = _protocol_for_cv(cv, protocol)
         decimals = _get_token_decimals(cv)
         raw_amount = parse_amount(amount, decimals, raw=raw)
+        if protocol == "morpho":
+            raw_withdraw = _raw_int(withdraw_amount, "--withdraw") if withdraw_amount else raw_amount
+            _morpho_deleverage(ctx, vault_address, raw_amount, max_debt, raw_withdraw, slippage, account,
+                               dry_run, skip_confirm, _)
+            return
 
         # Derive token addresses for swap
         target_asset_addr = str(cv.targetAsset())
@@ -1143,24 +1551,123 @@ def deleverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
         ctx.disconnect()
 
 
+def _morpho_teleport(ctx, vault_address, collateral_amount, debt_amount, keep_authorization, account,
+                     dry_run, skip_confirm, gas_extra, prepare=None) -> None:
+    """Move the sender's Morpho Blue position into a Twyne Morpho vault.
+
+    1. Morpho.setAuthorization(teleportOperator, true) — a direct tx from the user
+       (Morpho checks msg.sender, so it cannot go through the EVC). Sent only when missing.
+    2. EVC batch: [pre-items from ``prepare`` (e.g. create vault)] → enable operator →
+       executeTeleport → disable.
+    3. If step 1 granted the authorization, it is revoked afterwards — also when the batch
+       fails or is cancelled — unless --keep-authorization. An authorization the user had
+       before the run is left alone.
+
+    ``prepare()`` returns ``(vault_address, pre_items)``; it runs after step 1 so a
+    predicted CREATE address is fresh when the batch is built.
+    """
+    from ..contracts import morpho
+
+    op = teleport_operator("morpho")
+    op_addr = str(op.address)
+    blue = morpho()
+    sender = str(account.address)
+    gas_kwargs = _build_gas_kwargs(**gas_extra)
+    evc_instance = evc_contract()
+    prepare = prepare or (lambda: (vault_address, []))
+    fmt = lambda v: "all" if v == 2**256 - 1 else str(v)  # noqa: E731
+
+    def build():
+        target, pre_items = prepare()
+        teleport_data = op.executeTeleport.encode_input(target, collateral_amount, debt_amount)
+        items = list(pre_items) + _evc_operator_batch(
+            evc_instance, op_addr, sender, [(op_addr, sender, 0, teleport_data)]
+        )
+        return target, items
+
+    def simulate_or_exit(items) -> None:
+        sim = simulate_tx(evc_instance, "batch", [items], sender=account)
+        if not sim["success"]:
+            click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
+            raise SystemExit(1)
+
+    authorized = bool(blue.isAuthorized(sender, op_addr))
+    target, items = build()
+    details = [
+        ("Vault", target),
+        ("Protocol", "morpho"),
+        ("Collateral", fmt(collateral_amount)),
+        ("Debt", fmt(debt_amount)),
+        ("Operator", op_addr),
+        ("Morpho authorization", "already granted (left as is)" if authorized
+         else ("granted, then kept" if keep_authorization else "granted, then revoked")),
+        ("Sender", sender),
+    ]
+    if authorized:
+        simulate_or_exit(items)
+    if dry_run:
+        click.echo("Dry run — simulation passed." if authorized else
+                   "Dry run: the teleport operator is not authorized on Morpho yet; the real run sends "
+                   "Morpho.setAuthorization first, so the batch is not simulated.")
+        return
+    if not confirm_prompt(f"Teleport Morpho position into {format_address(target)}", details, skip_confirm):
+        click.echo("Cancelled.")
+        return
+
+    granted_here = False
+    try:
+        if not authorized:
+            display_receipt(_send_tx(blue.setAuthorization, [op_addr, True], account, gas_kwargs))
+            granted_here = True
+            target, items = build()  # re-predict after the extra tx
+            simulate_or_exit(items)
+        display_receipt(_send_tx(evc_instance.batch, [items], account, gas_kwargs))
+    finally:
+        if granted_here and not keep_authorization:
+            click.echo("Revoking the teleport operator's Morpho authorization...")
+            display_receipt(_send_tx(blue.setAuthorization, [op_addr, False], account, gas_kwargs))
+
+
 @operators.command()
 @click.argument("vault_address", shell_complete=complete_vault_address)
-@click.argument("target_vault_address", shell_complete=complete_target_vault)
-@click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
-              help="Protocol integration to use")
+@click.argument("target_vault_address", required=False, shell_complete=complete_target_vault)
+@click.option("--protocol", type=PROTOCOL_CHOICE, default=None,
+              help="Protocol integration to use (default: detected from the vault)")
+@click.option("--collateral-amount", type=int, default=None,
+              help="Morpho: collateral to move from your Morpho position (raw units; default: all)")
+@click.option("--debt-amount", type=int, default=None,
+              help="Morpho: debt to move from your Morpho position (raw units; default: all)")
+@click.option("--keep-authorization", is_flag=True, default=False,
+              help="Morpho: keep an authorization this command grants on Morpho (default: revoke it afterwards)")
 @tx_options
 @pass_ctx
-def teleport(ctx: TwyneContext, vault_address, target_vault_address, protocol,
-             account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
+def teleport(ctx: TwyneContext, vault_address, target_vault_address, protocol, collateral_amount, debt_amount,
+             keep_authorization, account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
     """Teleport a position from one collateral vault to another.
 
     Euler: calls cv.teleport() directly.
     Aave: uses the teleport operator contract.
+    Morpho: moves your direct Morpho Blue position (same market) into VAULT_ADDRESS.
+    No TARGET_VAULT_ADDRESS. The operator must be authorized on Morpho; the command
+    sends that authorization first and revokes it afterwards.
     """
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
+        protocol = _protocol_for_cv(cv, protocol)
+        if protocol == "morpho":
+            if target_vault_address:
+                raise click.UsageError("Morpho teleport takes no TARGET_VAULT_ADDRESS; the source is your Morpho position.")
+            coll = collateral_amount if collateral_amount is not None else 2**256 - 1
+            debt = debt_amount if debt_amount is not None else 2**256 - 1
+            _morpho_teleport(ctx, vault_address, coll, debt, keep_authorization, account, dry_run, skip_confirm, _)
+            return
+        if collateral_amount is not None or debt_amount is not None or keep_authorization:
+            raise click.UsageError("--collateral-amount, --debt-amount and --keep-authorization apply to Morpho only.")
+        if not target_vault_address:
+            raise click.UsageError("Missing argument 'TARGET_VAULT_ADDRESS'.")
 
         details = [
             ("Source Vault", vault_address),
@@ -1271,8 +1778,8 @@ def _build_close_position_batch(
 @click.argument("vault_address", shell_complete=complete_vault_address)
 @click.option("--slippage", type=float, default=1.0,
               help="Swap slippage tolerance in percent (default: 1.0%)")
-@click.option("--protocol", type=click.Choice(["euler", "aave"]), default="euler",
-              help="Protocol integration to use")
+@click.option("--protocol", type=PROTOCOL_CHOICE, default=None,
+              help="Protocol integration to use (default: detected from the vault)")
 @tx_options
 @pass_ctx
 def close_position(ctx: TwyneContext, vault_address, slippage, protocol,
@@ -1288,6 +1795,10 @@ def close_position(ctx: TwyneContext, vault_address, slippage, protocol,
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
         cv = collateral_vault(vault_address)
+        protocol = _protocol_for_cv(cv, protocol)
+        if protocol == "morpho":
+            _morpho_close_position(ctx, vault_address, slippage, account, dry_run, skip_confirm, _)
+            return
 
         # 1. Read vault state
         total_assets = cv.totalAssetsDepositedOrReserved()
@@ -1423,28 +1934,32 @@ def factory():
 
 @factory.command(name="create-vault")
 @click.argument("intermediate_vault", shell_complete=complete_iv_address)
-@click.argument("target_vault", shell_complete=complete_target_vault)
-@click.option("--vault-type", type=int, default=0, help="Vault type: 0=Euler, 1=Aave (default: 0)")
+@click.argument("target_vault", required=False, shell_complete=complete_target_vault)
+@click.option("--protocol", type=PROTOCOL_CHOICE, default=None,
+              help="Vault family (default: from --vault-type, else the IV's registry name)")
+@click.option("--vault-type", type=int, default=None, help="Vault type: 0=Euler, 1=Aave, 2=Morpho (alias of --protocol)")
 @click.option("--ltv", type=int, default=8500, help="Liquidation LTV in basis points (default: 8500 = 85%)")
-@click.option("--target-asset", default=None, help="Debt token address (required for Aave, ignored for Euler)")
+@click.option("--target-asset", default=None, help="Debt token address (required for Aave, ignored for Euler/Morpho)")
+@click.option("--market-id", default=None, help="Morpho market id (default: the IV's only allowed market)")
 @tx_options
 @pass_ctx
-def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type, ltv, target_asset,
-                 account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
+def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, protocol, vault_type, ltv, target_asset,
+                 market_id, account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
     """Create a new collateral vault via the factory.
 
     INTERMEDIATE_VAULT: The Twyne Intermediate Vault (CreditEVault) address.
 
-    TARGET_VAULT: External lending vault (Euler eVault or Aave pool).
+    TARGET_VAULT: External lending vault (Euler eVault or Aave pool). Optional for
+    Morpho (the chain's Morpho singleton).
     """
     from ..constants import ZERO_ADDRESS
 
-    if vault_type == 1 and not target_asset:
-        raise click.UsageError("Aave vaults (--vault-type 1) require --target-asset <debt-token-address>.")
+    vault_type, target_vault = _resolve_vault_family(intermediate_vault, target_vault, protocol, vault_type, target_asset)
 
     ctx.connect()
     try:
         account = resolve_account(account_alias, private_key, private_key_file)
+        market = _morpho_market_arg(intermediate_vault, market_id) if vault_type == MORPHO else None
 
         # The factory's typed create entrypoints (createEulerCollateralVault /
         # createAaveV3CollateralVault) take the IV address directly as
@@ -1453,7 +1968,7 @@ def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type
         target_asset = target_asset or ZERO_ADDRESS
 
         create_fn, args = _create_vault_call(
-            vault_type, intermediate_vault, target_vault, ltv, target_asset,
+            vault_type, intermediate_vault, target_vault, ltv, target_asset, market,
         )
 
         sim = simulate_through_evc(fct, create_fn, args, sender=account)
@@ -1462,14 +1977,15 @@ def create_vault(ctx: TwyneContext, intermediate_vault, target_vault, vault_type
             _show_verbose_error(ctx, sim)
             raise SystemExit(1)
 
-        vault_type_name = "Euler" if vault_type == 0 else "Aave"
+        vault_type_name = _VAULT_TYPE_NAME[vault_type]
         details = [
             ("Factory", str(fct.address)),
             ("Vault Type", vault_type_name),
             ("Intermediate Vault", intermediate_vault),
             ("Target Vault", target_vault),
             ("Liq LTV", f"{ltv} bp ({ltv/100:.1f}%)"),
-            ("Target Asset", target_asset),
+            ("Target Asset", market.loan_token if market else target_asset),
+            *([("Morpho Market", market.id)] if market else []),
             ("Sender", str(account.address)),
         ]
 
@@ -1513,18 +2029,54 @@ def _extract_vault_address_from_receipt(receipt, factory_address: str) -> str | 
 # --------------------------------------------------------------------------- #
 
 
+_VAULT_TYPE_NAME = {0: "Euler", 1: "Aave", 2: "Morpho"}
+
+
+def _resolve_vault_family(intermediate_vault: str, target_vault: str | None, protocol: str | None,
+                          vault_type: int | None, target_asset: str | None) -> tuple[int, str]:
+    """Return (vault_type, target_vault) from --protocol / --vault-type / the IV name."""
+    if protocol and vault_type is not None and _VAULT_TYPE_PROTOCOL.get(vault_type) != protocol:
+        raise click.UsageError("--protocol and --vault-type disagree.")
+    if vault_type is not None and vault_type not in _VAULT_TYPE_PROTOCOL:
+        raise click.UsageError("Vault type must be 0 (Euler), 1 (Aave) or 2 (Morpho).")
+    family = protocol or (_VAULT_TYPE_PROTOCOL[vault_type] if vault_type is not None else None)
+    family = _protocol_for_iv(intermediate_vault, family)
+    vtype = {"euler": EULER_V2, "aave": AAVE_V3, "morpho": MORPHO}[family]
+    if vtype == AAVE_V3 and not target_asset:
+        raise click.UsageError("Aave vaults require --target-asset <debt-token-address>.")
+    if vtype == MORPHO:
+        singleton = get_address("morpho")
+        if target_vault and target_vault.lower() != singleton.lower():
+            raise click.UsageError(f"Morpho vaults target the Morpho singleton {singleton}, not {target_vault}.")
+        target_vault = singleton
+    elif not target_vault:
+        raise click.UsageError("Missing argument 'TARGET_VAULT'.")
+    return vtype, target_vault
+
+
+def _morpho_market_arg(intermediate_vault: str, market_id: str | None):
+    from ..morpho import resolve_market
+
+    return resolve_market(intermediate_vault, market_id)
+
+
 def _derive_deposit_underlying(intermediate_vault: str, vault_type: int) -> str:
-    """Resolve IV -> receipt token -> underlying for both Euler and Aave."""
+    """Resolve IV -> receipt token -> underlying for Euler and Aave; Morpho IVs hold the raw collateral."""
     receipt_token = str(credit_vault(intermediate_vault).asset())
+    if vault_type == MORPHO:
+        return receipt_token
     return str(credit_vault(receipt_token).asset())
 
 
-def _derive_borrow_token(target_vault: str, target_asset: str | None, vault_type: int) -> str:
+def _derive_borrow_token(target_vault: str, target_asset: str | None, vault_type: int, market=None) -> str:
     """Derive the borrow/debt token address.
 
     Euler: target vault is an eVault, its asset() = borrow token.
     Aave: user provides --target-asset explicitly.
+    Morpho: the market loan token.
     """
+    if vault_type == MORPHO and market is not None:
+        return market.loan_token
     if vault_type == 1 and target_asset:  # Aave
         return target_asset
     # Euler — target vault asset
@@ -1533,16 +2085,20 @@ def _derive_borrow_token(target_vault: str, target_asset: str | None, vault_type
 
 def _create_vault_call(
     vault_type: int, intermediate_vault: str, target_vault: str, ltv: int,
-    target_asset: str | None = None,
+    target_asset: str | None = None, market=None,
 ) -> tuple[str, list]:
     """Return ``(function_name, args)`` for the factory's typed create entrypoint.
 
-    Picks ``createEulerCollateralVault`` (Euler V2) or
-    ``createAaveV3CollateralVault`` (Aave V3, which additionally takes the target
-    asset) based on ``vault_type``.
+    Picks ``createEulerCollateralVault`` (Euler V2), ``createAaveV3CollateralVault``
+    (Aave V3, which additionally takes the target asset) or
+    ``createMorphoCollateralVault`` (takes the MarketParams struct) based on ``vault_type``.
     """
-    if vault_type not in (EULER_V2, AAVE_V3):
-        raise click.UsageError("Vault type must be 0 (Euler) or 1 (Aave).")
+    if vault_type not in (EULER_V2, AAVE_V3, MORPHO):
+        raise click.UsageError("Vault type must be 0 (Euler), 1 (Aave) or 2 (Morpho).")
+    if vault_type == MORPHO:
+        if market is None:
+            raise click.UsageError("Morpho vaults need a market (--market-id).")
+        return "createMorphoCollateralVault", [intermediate_vault, target_vault, market.params, ltv]
     if not uses_pair_risk():
         from ..constants import ZERO_ADDRESS
         return "createCollateralVault", [vault_type, intermediate_vault, target_vault, ltv, target_asset or ZERO_ADDRESS]
@@ -1554,8 +2110,13 @@ def _create_vault_call(
 def _build_open_position_batch(
     factory, create_fn: str, create_args: list, predicted_address: str,
     raw_deposit: int, raw_borrow: int | None, sender: str,
+    deposit_token: str | None = None, swap: dict | None = None,
 ) -> list[tuple]:
-    """Build EVC batch items for create-vault + deposit + (optional) borrow."""
+    """Build EVC batch items for create-vault + deposit + (optional) borrow.
+
+    Morpho (createMorphoCollateralVault): the deposit is AssetZap.zap of the raw
+    collateral (or of ``deposit_token`` through ``swap``) + skim.
+    """
     items = []
 
     # Item 1: create vault
@@ -1564,7 +2125,12 @@ def _build_open_position_batch(
 
     # The first factory argument is the IV for either typed entrypoint.
     receipt_token = str(credit_vault(create_args[0] if uses_pair_risk() else create_args[1]).asset())
-    items.extend(underlying_deposit_items(predicted_address, receipt_token, raw_deposit, sender))
+    if create_fn == "createMorphoCollateralVault":
+        from ..deposits import morpho_deposit_items
+
+        items.extend(morpho_deposit_items(predicted_address, receipt_token, raw_deposit, sender, deposit_token, swap))
+    else:
+        items.extend(underlying_deposit_items(predicted_address, receipt_token, raw_deposit, sender))
     cv = collateral_vault(predicted_address)
 
     # Final item (optional): borrow
@@ -1577,16 +2143,23 @@ def _build_open_position_batch(
 
 @factory.command(name="open-position")
 @click.argument("intermediate_vault", shell_complete=complete_iv_address)
-@click.argument("target_vault", shell_complete=complete_target_vault)
-@click.option("--vault-type", type=int, default=0, help="Vault type: 0=Euler, 1=Aave (default: 0)")
+@click.argument("target_vault", required=False, shell_complete=complete_target_vault)
+@click.option("--protocol", type=PROTOCOL_CHOICE, default=None,
+              help="Vault family (default: from --vault-type, else the IV's registry name)")
+@click.option("--vault-type", type=int, default=None, help="Vault type: 0=Euler, 1=Aave, 2=Morpho (alias of --protocol)")
 @click.option("--ltv", type=int, default=8500, help="Liquidation LTV in basis points (default: 8500 = 85%)")
-@click.option("--target-asset", default=None, help="Debt token address (required for Aave, ignored for Euler)")
+@click.option("--target-asset", default=None, help="Debt token address (required for Aave, ignored for Euler/Morpho)")
+@click.option("--market-id", default=None, help="Morpho market id (default: the IV's only allowed market)")
 @click.option("--deposit", "deposit_amount", required=True, help="Amount of underlying token to deposit")
 @click.option("--borrow", "borrow_amount", default=None, help="Amount to borrow (omit for deposit-only)")
+@click.option("--token-in", default=None,
+              help="Morpho: deposit this token instead of the collateral; it is swapped to the collateral via Enso")
+@click.option("--slippage", type=float, default=DEFAULT_SLIPPAGE,
+              help=f"Morpho --token-in swap slippage in percent (default: {DEFAULT_SLIPPAGE}%)")
 @tx_options
 @pass_ctx
-def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_type, ltv,
-                  target_asset, deposit_amount, borrow_amount,
+def open_position(ctx: TwyneContext, intermediate_vault, target_vault, protocol, vault_type, ltv,
+                  target_asset, market_id, deposit_amount, borrow_amount, token_in, slippage,
                   account_alias, private_key, private_key_file, dry_run, skip_confirm, raw, max_approve, skip_approval, **_):
     """Create a vault, deposit collateral, and optionally borrow — in one atomic EVC batch.
 
@@ -1599,8 +2172,9 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
     """
     from ..constants import ZERO_ADDRESS
 
-    if vault_type == 1 and not target_asset:
-        raise click.UsageError("Aave vaults (--vault-type 1) require --target-asset <debt-token-address>.")
+    vault_type, target_vault = _resolve_vault_family(intermediate_vault, target_vault, protocol, vault_type, target_asset)
+    if token_in and vault_type != MORPHO:
+        raise click.UsageError("--token-in applies to Morpho vaults only.")
 
     # v1.0.5: the IV passed by the user is exactly what the factory expects.
     original_iv = intermediate_vault
@@ -1611,10 +2185,11 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
 
         fct = collateral_vault_factory()
         target_asset_addr = target_asset or ZERO_ADDRESS
+        market = _morpho_market_arg(intermediate_vault, market_id) if vault_type == MORPHO else None
 
         # 1. Predict vault address via simulation
         create_fn, create_args = _create_vault_call(
-            vault_type, intermediate_vault, target_vault, ltv, target_asset_addr,
+            vault_type, intermediate_vault, target_vault, ltv, target_asset_addr, market,
         )
         sim = simulate_through_evc(fct, create_fn, create_args, sender=account)
         if not sim["success"]:
@@ -1625,7 +2200,7 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
 
         # 2. Derive deposit token (underlying) and borrow token
         # Use original IV for Euler token derivation (needs CreditEVault for double-hop)
-        deposit_token_addr = _derive_deposit_underlying(original_iv, vault_type)
+        deposit_token_addr = token_in or _derive_deposit_underlying(original_iv, vault_type)
         deposit_token = erc20(deposit_token_addr)
         deposit_decimals = deposit_token.decimals()
         deposit_symbol = deposit_token.symbol()
@@ -1634,7 +2209,7 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
         borrow_symbol = None
         borrow_decimals = None
         if borrow_amount:
-            borrow_token_addr = _derive_borrow_token(target_vault, target_asset, vault_type)
+            borrow_token_addr = _derive_borrow_token(target_vault, target_asset, vault_type, market)
             borrow_token = erc20(borrow_token_addr)
             borrow_decimals = borrow_token.decimals()
             borrow_symbol = borrow_token.symbol()
@@ -1663,14 +2238,23 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
         if borrow_amount:
             click.echo(f"Borrow token:    {borrow_symbol} ({borrow_token_addr})")
 
-        vault_type_name = "Euler" if vault_type == 0 else "Aave"
+        swap = None
+        if token_in:
+            from ..swap import build_swap
+
+            swap = build_swap(token_in, str(credit_vault(intermediate_vault).asset()), raw_deposit,
+                              str(asset_zap().address), str(account.address), slippage)
+            _price_impact_note(swap)
+
+        vault_type_name = _VAULT_TYPE_NAME[vault_type]
         details = [
             ("Factory", str(fct.address)),
             ("Vault Type", vault_type_name),
             ("Intermediate Vault", intermediate_vault),
             ("Target Vault", target_vault),
+            *([("Morpho Market", market.id)] if market else []),
             ("Liq LTV", f"{ltv} bp ({ltv/100:.1f}%)"),
-            ("Deposit", f"{deposit_amount} {deposit_symbol} (underlying)"),
+            ("Deposit", f"{deposit_amount} {deposit_symbol}" + ("" if vault_type == MORPHO else " (underlying)")),
         ]
         if borrow_amount:
             details.append(("Borrow", f"{borrow_amount} {borrow_symbol}"))
@@ -1690,7 +2274,7 @@ def open_position(ctx: TwyneContext, intermediate_vault, target_vault, vault_typ
         # 7. Build and simulate full batch (approval now in place)
         batch_items = _build_open_position_batch(
             fct, create_fn, create_args, predicted_address,
-            raw_deposit, raw_borrow, str(account.address),
+            raw_deposit, raw_borrow, str(account.address), token_in, swap,
         )
         evc_instance = evc_contract()
         sim_batch = simulate_tx(evc_instance, "batch", [batch_items], sender=account)
@@ -1851,8 +2435,8 @@ def simulate(ctx: TwyneContext, batch_file, evc_address, account_alias, private_
 
 @tx.command(name="discover-positions")
 @click.argument("wallet_address")
-@click.option("--protocol", type=click.Choice(["euler", "aave"]), default=None,
-              help="Only discover from a specific protocol (default: both)")
+@click.option("--protocol", type=PROTOCOL_CHOICE, default=None,
+              help="Only discover from a specific protocol (default: all on this chain)")
 @pass_ctx
 def discover_positions(ctx: TwyneContext, wallet_address, protocol):
     """Discover migratable positions from Euler V2 and Aave V3.
@@ -1862,7 +2446,6 @@ def discover_positions(ctx: TwyneContext, wallet_address, protocol):
     from ..formatting import output_table
 
     _check_protocol_supported(protocol)
-    chain = active_chain()
 
     ctx.connect()
     try:
@@ -1870,10 +2453,10 @@ def discover_positions(ctx: TwyneContext, wallet_address, protocol):
             positions = discover_euler_positions(wallet_address)
         elif protocol == "aave":
             positions = discover_aave_positions(wallet_address)
-        elif not chain.supports_euler:
-            # Non-Euler chains: default to Aave-only when --protocol is unspecified.
-            positions = discover_aave_positions(wallet_address)
+        elif protocol == "morpho":
+            positions = discover_morpho_positions(wallet_address)
         else:
+            # All families the chain supports (Aave-only on MegaETH, Morpho-only on Arbitrum).
             positions = discover_all_positions(wallet_address)
 
         if not positions:
@@ -1906,15 +2489,17 @@ def discover_positions(ctx: TwyneContext, wallet_address, protocol):
 
 @tx.command(name="migrate-position")
 @click.argument("wallet_address")
-@click.option("--protocol", type=click.Choice(["euler", "aave"]), default=None,
+@click.option("--protocol", type=PROTOCOL_CHOICE, default=None,
               help="Override protocol detection")
 @click.option("--ltv", type=int, default=8500,
               help="Liquidation LTV in basis points (default: 8500 = 85%)")
 @click.option("--position", "position_num", type=int, default=None,
               help="Position number from discover-positions (skip interactive selection)")
+@click.option("--keep-authorization", is_flag=True, default=False,
+              help="Morpho: keep the teleport operator authorized on Morpho afterwards (default: revoke)")
 @tx_options
 @pass_ctx
-def migrate_position(ctx: TwyneContext, wallet_address, protocol, ltv, position_num,
+def migrate_position(ctx: TwyneContext, wallet_address, protocol, ltv, position_num, keep_authorization,
                      account_alias, private_key, private_key_file, dry_run, skip_confirm, **_):
     """Migrate an existing Euler/Aave position to Twyne in one transaction.
 
@@ -1924,7 +2509,6 @@ def migrate_position(ctx: TwyneContext, wallet_address, protocol, ltv, position_
     migration transaction (create vault + teleport).
     """
     _check_protocol_supported(protocol)
-    chain = active_chain()
 
     ctx.connect()
     try:
@@ -1935,8 +2519,8 @@ def migrate_position(ctx: TwyneContext, wallet_address, protocol, ltv, position_
             positions = discover_euler_positions(wallet_address)
         elif protocol == "aave":
             positions = discover_aave_positions(wallet_address)
-        elif not chain.supports_euler:
-            positions = discover_aave_positions(wallet_address)
+        elif protocol == "morpho":
+            positions = discover_morpho_positions(wallet_address)
         else:
             positions = discover_all_positions(wallet_address)
 
@@ -1976,10 +2560,40 @@ def migrate_position(ctx: TwyneContext, wallet_address, protocol, ltv, position_
         # 3. Route to protocol-specific migration
         if selected.protocol == "euler":
             _migrate_euler(ctx, selected, ltv, account, dry_run, skip_confirm, **_)
+        elif selected.protocol == "morpho":
+            if wallet_address.lower() != str(account.address).lower():
+                raise click.UsageError("Morpho migration moves the signer's own position; sign with WALLET_ADDRESS.")
+            _migrate_morpho(ctx, selected, ltv, account, dry_run, skip_confirm, keep_authorization, _)
         else:
             _migrate_aave(ctx, selected, ltv, account, dry_run, skip_confirm, **_)
     finally:
         ctx.disconnect()
+
+
+def _migrate_morpho(ctx, position, ltv, account, dry_run, skip_confirm, keep_authorization, gas_extra):
+    """Create a Twyne Morpho vault and teleport the whole Morpho Blue position into it."""
+    from ..morpho import resolve_market
+
+    market = resolve_market(position.intermediate_vault, position.morpho_market_id)
+    fct = collateral_vault_factory()
+    singleton = get_address("morpho")
+    create_fn, create_args = _create_vault_call(MORPHO, position.intermediate_vault, singleton, ltv, None, market)
+    sender = str(account.address)
+    create_item = (str(fct.address), sender, 0, getattr(fct, create_fn).encode_input(*create_args))
+
+    def prepare():
+        # Predict the CREATE address from a fresh simulation each time the batch is built.
+        sim = simulate_through_evc(fct, create_fn, create_args, sender=account)
+        if not sim["success"]:
+            click.echo(f"Simulation failed: {sim['error']}", err=True)
+            _show_verbose_error(ctx, sim)
+            raise SystemExit(1)
+        predicted = _format_sim_address(sim["result"])
+        click.echo(f"  New vault:  {predicted}")
+        return predicted, [create_item]
+
+    _morpho_teleport(ctx, None, 2**256 - 1, 2**256 - 1, keep_authorization, account, dry_run,
+                     skip_confirm, gas_extra, prepare=prepare)
 
 
 def _migrate_euler(ctx, position, ltv, account, dry_run, skip_confirm, **gas_extra):

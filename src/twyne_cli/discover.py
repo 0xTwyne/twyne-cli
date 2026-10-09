@@ -1,4 +1,4 @@
-"""Position discovery for Euler V2 and Aave V3 — finds migratable positions."""
+"""Position discovery for Euler V2, Aave V3 and Morpho Blue — finds migratable positions."""
 
 from dataclasses import dataclass
 
@@ -21,6 +21,7 @@ from .risk import pair_risk
 # Vault types for CollateralVaultFactory
 EULER_V2 = 0
 AAVE_V3 = 1
+MORPHO_BLUE = 2
 
 # Scan sub-accounts 0-3 (covers 99% of Euler users)
 MAX_SUB_ACCOUNTS = 4
@@ -44,7 +45,7 @@ AAVE_MIGRATION_PAIRS = [
 class DiscoveredPosition:
     """A migratable position from an external lending protocol."""
 
-    protocol: str  # "euler" or "aave"
+    protocol: str  # "euler", "aave" or "morpho"
     collateral_address: str  # eVault or aToken address
     collateral_symbol: str
     collateral_amount: int  # raw amount
@@ -58,6 +59,7 @@ class DiscoveredPosition:
     ltv_bps: int  # current operating LTV in basis points
     liq_ltv_bps: int  # external liquidation LTV in basis points (eMode-aware for Aave)
     max_twyne_ltv_bps: int  # max Twyne liquidation LTV for this market
+    morpho_market_id: str = ""  # Morpho Blue market id (Morpho positions only)
 
 
 # --------------------------------------------------------------------------- #
@@ -311,13 +313,79 @@ def discover_aave_positions(user_address: str) -> list[DiscoveredPosition]:
 
 
 # --------------------------------------------------------------------------- #
+# Morpho Blue discovery
+# --------------------------------------------------------------------------- #
+
+
+def discover_morpho_positions(user_address: str) -> list[DiscoveredPosition]:
+    """Direct Morpho Blue positions of ``user_address`` in markets that a Twyne IV allows.
+
+    Debt is borrowShares converted with Morpho's round-up share math at the last
+    accrual; the teleport itself moves the exact live amount.
+    """
+    from .contracts import morpho, morpho_oracle
+    from .morpho import allowed_markets, registered_markets
+
+    blue = morpho()
+    positions = []
+    ivs = {m.intermediate_vault for m in registered_markets()}
+    for iv_addr in ivs:
+        for market in allowed_markets(iv_addr):
+            try:
+                _supply_shares, borrow_shares, collateral = blue.position(market.id, user_address)
+                collateral, borrow_shares = int(collateral), int(borrow_shares)
+                if collateral == 0:
+                    continue
+                m = blue.market(market.id)
+                total_borrow_assets, total_borrow_shares = int(m[2]), int(m[3])
+                # SharesMathLib.toAssetsUp: shares * (totalAssets + 1) / (totalShares + 1e6), rounded up
+                num = borrow_shares * (total_borrow_assets + 1)
+                den = total_borrow_shares + 10**6
+                debt = -(-num // den)
+                price = int(morpho_oracle(market.oracle).price())
+                collateral_value = collateral * price // 10**36
+                ltv_bps = debt * MAXFACTOR // collateral_value if collateral_value else 0
+                coll_token, debt_token = erc20(market.collateral_token), erc20(market.loan_token)
+                positions.append(DiscoveredPosition(
+                    protocol="morpho",
+                    collateral_address=market.collateral_token,
+                    collateral_symbol=coll_token.symbol(),
+                    collateral_amount=collateral,
+                    collateral_decimals=int(coll_token.decimals()),
+                    debt_address=market.loan_token,
+                    debt_symbol=debt_token.symbol(),
+                    debt_amount=debt,
+                    debt_decimals=int(debt_token.decimals()),
+                    sub_account_id=0,
+                    intermediate_vault=iv_addr,
+                    ltv_bps=ltv_bps,
+                    liq_ltv_bps=market.lltv_bps,
+                    max_twyne_ltv_bps=pair_risk(iv_addr, market.loan_token)["max_twyne_ltv_bps"],
+                    morpho_market_id=market.id,
+                ))
+            except Exception as exc:  # noqa: BLE001
+                import click
+
+                click.echo(f"Warning: could not read Morpho market {market.id}: {type(exc).__name__}", err=True)
+                continue
+    return positions
+
+
+# --------------------------------------------------------------------------- #
 # Combined discovery
 # --------------------------------------------------------------------------- #
 
 
 def discover_all_positions(user_address: str) -> list[DiscoveredPosition]:
-    """Discover all migratable positions across Euler and Aave."""
+    """Discover all migratable positions across the families the active chain supports."""
+    from .chains import active_chain
+
+    chain = active_chain()
     positions = []
-    positions.extend(discover_euler_positions(user_address))
-    positions.extend(discover_aave_positions(user_address))
+    if chain.supports_euler:
+        positions.extend(discover_euler_positions(user_address))
+    if chain.supports_aave:
+        positions.extend(discover_aave_positions(user_address))
+    if chain.supports_morpho:
+        positions.extend(discover_morpho_positions(user_address))
     return positions

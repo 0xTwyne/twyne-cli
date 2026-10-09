@@ -13,8 +13,10 @@ venv/
 # Ape
 .build/
 
-# Environment
+# Environment (secrets: RPC keys, ENSO_API_KEY) — only the template is tracked
 .env
+.env.*
+!.env.example
 
 # IDE
 .idea/

@@ -2,6 +2,7 @@
 
 Includes:
 - Euler Swap API client (for deleverage operator Swapper multicall data)
+- Enso route builder (Twyne Swapper Generic-handler calldata; needs the user's ENSO_API_KEY)
 - 1inch Swap API client (legacy, for direct swaps)
 """
 
@@ -85,6 +86,136 @@ def extract_multicall_data(quote: dict) -> list[bytes]:
     to DeleverageOperator.executeDeleverage() as the swapData[] parameter.
     """
     return [bytes.fromhex(item["data"][2:]) for item in quote["swap"]["multicallItems"]]
+
+
+# --------------------------------------------------------------------------- #
+# Enso (Generic-handler routes for the Twyne Swapper)
+# --------------------------------------------------------------------------- #
+# Port of twyne-frontend apps/lend/src/app/api/v1/swap (enso.ts + normalizer.ts,
+# vault mode). Enso delivers the output straight to ``receiver``; the Swapper
+# item only forwards tokenIn to the Enso router through the Generic handler.
+
+ENSO_API_BASE = "https://api.enso.finance"
+ENSO_RATE_LIMIT_RETRIES = 3
+
+# Enso routers we accept per chain (verified against live responses; same as
+# the frontend's ENSO_ALLOWED_ROUTERS).
+ENSO_ALLOWED_ROUTERS: dict[int, tuple[str, ...]] = {
+    1: ("0xF75584eF6673aD213a685a1B58Cc0330B8eA22Cf",),
+    42161: ("0xF75584eF6673aD213a685a1B58Cc0330B8eA22Cf",),
+}
+
+# bytes32("Generic") — EVK Swapper handler id that calls an arbitrary target.
+HANDLER_GENERIC = b"Generic".ljust(32, b"\0")
+_SWAP_SELECTOR = bytes.fromhex("f71679d0")  # swap((bytes32,uint256,address,address,address,address,address,address,uint256,bytes))
+_SWAP_PARAMS_TYPE = "(bytes32,uint256,address,address,address,address,address,address,uint256,bytes)"
+_ZERO = "0x" + "0" * 40
+
+
+def fetch_enso_route(
+    chain_id: int, from_address: str, receiver: str, token_in: str, token_out: str,
+    amount_in: int, slippage_bps: int, api_key: str,
+) -> dict:
+    """Call Enso /shortcuts/route and validate the response (router allowlist, non-zero min out)."""
+    params = {
+        "chainId": chain_id,
+        "fromAddress": from_address,
+        "receiver": receiver,
+        "tokenIn": token_in,
+        "tokenOut": token_out,
+        "amountIn": str(amount_in),
+        "slippage": str(slippage_bps),
+    }
+    # Free Enso keys allow ~1 request/second; back off and retry on 429.
+    for attempt in range(ENSO_RATE_LIMIT_RETRIES + 1):
+        resp = httpx.get(
+            f"{ENSO_API_BASE}/api/v1/shortcuts/route",
+            params=params,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            timeout=30,
+        )
+        if resp.status_code != 429 or attempt == ENSO_RATE_LIMIT_RETRIES:
+            break
+        time.sleep(1.2 * (attempt + 1))
+    if resp.status_code != 200:
+        # The body never contains the key; the request headers are not echoed.
+        raise RuntimeError(f"Enso API error {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    if str(data.get("minAmountOut")) in ("", "0", "None"):
+        raise RuntimeError("Enso returned zero minAmountOut — slippage protection would be disabled")
+    router = str(data["tx"]["to"]).lower()
+    allowed = [r.lower() for r in ENSO_ALLOWED_ROUTERS.get(chain_id, ())]
+    if router not in allowed:
+        raise RuntimeError(f"Enso returned untrusted router {data['tx']['to']} for chain {chain_id}")
+    return data
+
+
+def encode_generic_swap(
+    token_in: str, token_out: str, receiver: str, origin: str, target: str, payload: bytes,
+) -> bytes:
+    """Encode Swapper.swap(SwapParams) with the Generic handler calling ``target`` with ``payload``."""
+    from eth_abi import encode
+    from eth_utils import to_checksum_address
+
+    generic = encode(["address", "bytes"], [to_checksum_address(target), payload])
+    params = (
+        HANDLER_GENERIC,
+        0,  # MODE_EXACT_IN
+        to_checksum_address(origin),
+        to_checksum_address(token_in),
+        to_checksum_address(token_out),
+        _ZERO,  # vaultIn
+        _ZERO,  # accountIn
+        to_checksum_address(receiver),
+        0,  # amountOut: unused in EXACT_IN; the operator / AssetZap enforces the minimum
+        generic,
+    )
+    return _SWAP_SELECTOR + encode([_SWAP_PARAMS_TYPE], [params])
+
+
+def enso_swap(
+    chain_id: int, swapper: str, token_in: str, token_out: str, amount: int,
+    receiver: str, origin: str, slippage: float, api_key: str,
+) -> dict:
+    """Build Swapper multicall items for an Enso route that pays ``receiver``.
+
+    Returns ``{"swap_data": [bytes], "amount_out": int, "amount_out_min": int,
+    "price_impact_bps": float | None, "provider": "enso"}``. ``swap_data`` is the
+    ``bytes[]`` that the operators and AssetZap pass to ``Swapper.multicall``.
+    """
+    slippage_bps = int(round(slippage * 100))
+    route = fetch_enso_route(chain_id, swapper, receiver, token_in, token_out, amount, slippage_bps, api_key)
+    payload = bytes.fromhex(route["tx"]["data"][2:])
+    item = encode_generic_swap(token_in, token_out, receiver, origin, route["tx"]["to"], payload)
+    impact = route.get("priceImpact")
+    return {
+        "swap_data": [item],
+        "amount_out": int(route["amountOut"]),
+        "amount_out_min": int(route["minAmountOut"]),
+        "price_impact_bps": float(impact) if impact is not None else None,
+        "provider": "enso",
+    }
+
+
+def build_swap(
+    token_in: str, token_out: str, amount: int, receiver: str, origin: str, slippage: float,
+) -> dict:
+    """Swap legs for the active chain's swap provider (see ChainSpec.swap_provider).
+
+    Only Enso chains use this entry point today; mainnet operator commands keep
+    their Euler Swap API calls unchanged.
+    """
+    from .chains import active_chain
+    from .contracts import swapper_address
+    from .secrets import require_enso_key
+
+    chain = active_chain()
+    if chain.swap_provider != "enso":
+        raise RuntimeError(f"build_swap supports Enso chains only; {chain.name} uses {chain.swap_provider}")
+    return enso_swap(
+        chain.chain_id, swapper_address(), token_in, token_out, amount, receiver, origin, slippage,
+        require_enso_key(),
+    )
 
 
 # --------------------------------------------------------------------------- #
