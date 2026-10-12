@@ -90,10 +90,13 @@ def test_batch_token_approve_rejects_evc():
 # Static scan: no literal approve / permit / authorization to an EVC.
 # --------------------------------------------------------------------------- #
 _GRANT_FIRST_ARG = re.compile(
-    r"\.(approve|increaseAllowance|permit|setAuthorization)(?:\.encode_input)?\s*\(\s*([^,)]+)")
+    r"(?:\.|\b_)(approve|increaseAllowance|permit|setAuthorization)(?:_cd|\.encode_input)?\s*\(\s*([^,)]+)")
 _GRANT_SECOND_ARG = re.compile(
     r"\.(setAccountOperator|setOperator)(?:\.encode_input)?\s*\(\s*[^,)]+,\s*([^,)]+)")
 _EVC_EXPR = re.compile(r"evc|0x[0-9a-fA-F]{40}", re.IGNORECASE)
+# Data-driven grants: an (owner/token, EVC, amount) tuple, e.g. an approval-plan row
+# `(usde, EVC, amt)` or transferFrom args `[borrower, EVC, amt]` that move tokens into an EVC.
+_EVC_TUPLE = re.compile(r"(?:(?<![\w.])\(|\[)\s*[\w.]+\s*,\s*[A-Z_]*EVC[A-Z_]*\s*,")
 
 
 def _grant_args(text: str):
@@ -111,10 +114,18 @@ def test_no_literal_grant_to_evc_in_source():
                 hit = _EVC_EXPR.search(arg)
                 if hit and (not hit.group(0).startswith("0x") or hit.group(0).lower() in banned):
                     offenders.append(f"{f.relative_to(REPO)}:{line}: {fn}({arg}, ...)")
+            for n, text in enumerate(f.read_text().splitlines(), 1):
+                code = text.split("#")[0]
+                if '"""' not in code and _EVC_TUPLE.search(code):
+                    offenders.append(f"{f.relative_to(REPO)}:{n}: {text.strip()}")
     assert not offenders, "Grant to an EVC:\n" + "\n".join(offenders)
 
 
 def test_static_scan_catches_offender():
-    sample = 'usde.approve(EVC, amount)\nevc.setAccountOperator.encode_input(me, evc_addr, True)\n'
+    sample = 'usde.approve(EVC, amount)\n(usde, b, 0, base._approve_cd(EVC, amt))\n' \
+        'evc.setAccountOperator.encode_input(me, evc_addr, True)\n'
     args = [a for _, a, _ in _grant_args(sample)]
-    assert args == ["EVC", "evc_addr"]
+    assert args == ["EVC", "EVC", "evc_addr"]
+    assert _EVC_TUPLE.search("        (cfg.usde, EVC, plan.start_usde, 'USDe -> EVC'),")
+    assert _EVC_TUPLE.search('cd("transferFrom(address,address,uint256)", T, [b, EVC, amt])')
+    assert not _EVC_TUPLE.search("ch.send_impersonated(b, EVC, batch, ts=T)")
