@@ -243,7 +243,7 @@ CLI (Click via Ape)
 ### Key Design Patterns
 
 - **EVC routing**: All collateral vault operations route through the Twyne EVC (`callThroughEVC` modifier). The CLI uses `execute_through_evc()` to encode calldata and route via `evc.call()`.
-- **Automatic approvals**: `ensure_allowance()` checks balances/allowances and prompts for approval. Supports `--max-approve` and `--skip-approval`.
+- **Automatic approvals**: `ensure_allowance()` checks balances/allowances and prompts for approval. Supports `--max-approve` and `--skip-approval`; it refuses any EVC spender (`spender_guard.assert_safe_spender`).
 - **Simulate before submit**: All tx commands simulate via `simulate_tx()` / `simulate_through_evc()` before confirmation.
 - **TTY detection**: Output auto-switches to JSON when piped. `--json` forces JSON in TTY.
 - **Incremental cache**: Vault list scans only new blocks since last checkpoint (`~/.config/twyne/cache/`).
@@ -268,6 +268,7 @@ CLI (Click via Ape)
 
 - **Never speculate about on-chain protocol parameters.** LTV limits, health factors, interest rates, supported pairs, and all other protocol parameters are on-chain and can change. Always query them using the CLI (`twyne protocol overview`, `twyne protocol ext-ltvs`, `twyne protocol rates`, `twyne vault health`, etc.) before answering questions about what the protocol supports or whether a strategy is possible.
 - **Never say something is impossible without checking first.** If a user asks whether a position, leverage level, or strategy is feasible, run the relevant query commands before responding. Do not guess based on "typical DeFi" assumptions.
+- **Never approve, permit or authorize an EVC (Twyne or Euler) or any contract that runs caller-chosen calls.** Pull user tokens only through a contract that authenticates the user. If a simulation fails with an allowance error, stop and escalate; never override state to make it pass. Every approval / permit / operator builder calls `assert_safe_spender()` from `src/twyne_cli/spender_guard.py` (incident 95524); add the call to any new builder.
 
 ## Conventions
 

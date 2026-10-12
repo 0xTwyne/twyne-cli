@@ -269,7 +269,9 @@ def ensure_allowance(
     Accepts optional gas_kwargs: max_priority_fee, gas (gas limit).
     """
     from .contracts import erc20
+    from .spender_guard import assert_safe_spender
 
+    assert_safe_spender(spender)
     token = erc20(token_address)
     current = token.allowance(str(sender.address), spender)
 

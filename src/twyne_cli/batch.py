@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from .contracts import collateral_vault, erc20
+from .spender_guard import assert_safe_spender
 from .transactions import parse_amount
 
 
@@ -110,7 +111,7 @@ def _encode_token_op(fn_name: str, op: dict, on_behalf_of: str, block=None) -> d
 
     if fn_name == "approve":
         raw_amount = parse_amount(op["amount"], decimals)
-        spender = op["spender"]
+        spender = assert_safe_spender(op["spender"])
         data = token.approve.encode_input(spender, raw_amount)
     else:
         raise ValueError(f"Unknown token action: {fn_name}")
