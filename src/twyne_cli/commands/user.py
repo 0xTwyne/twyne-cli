@@ -6,10 +6,13 @@ from ..cache import get_vault_cache
 from ..context import TwyneContext, pass_ctx
 from ..contracts import collateral_vault
 from ..formatting import (
-    format_address,
+    format_hf,
+    format_value,
+    hf_or_none,
     is_tty,
     output_json,
     output_table,
+    risk_level,
 )
 
 
@@ -46,35 +49,49 @@ def user(ctx: TwyneContext, wallet: str):
             return
 
         click.echo(f"Found {len(owned_vaults)} vault(s).", err=True)
-        click.echo(
-            "Note: Health factors unavailable — HealthStatViewer removed in v1.0.5.",
-            err=True,
-        )
+        from .. import lens
+        from ..morpho import detect_protocol
 
         vault_summaries = []
         for vault_addr in owned_vaults:
-            vault_summaries.append({
-                "vault": vault_addr,
-                "note": "Health factors unavailable — HealthStatViewer removed in v1.0.5",
-            })
+            try:
+                cv = collateral_vault(vault_addr)
+                protocol = detect_protocol(cv, block)
+                unit = lens.value_unit(protocol, cv, block)
+                h = lens.health(vault_addr, block)
+                vault_summaries.append({
+                    "vault": vault_addr,
+                    "protocol": protocol,
+                    "external_hf": hf_or_none(h["ext_hf_raw"]),
+                    "internal_hf": hf_or_none(h["in_hf_raw"]),
+                    "_ext_raw": h["ext_hf_raw"],
+                    "_in_raw": h["in_hf_raw"],
+                    "external_debt_value": h["external_debt_value"],
+                    "value_unit": unit,
+                    "risk": risk_level(min(h["ext_hf_raw"], h["in_hf_raw"])),
+                })
+            except Exception as exc:
+                vault_summaries.append({"vault": vault_addr, "error": str(exc)})
 
         if ctx.force_json or not is_tty():
             output_json({
                 "wallet": wallet,
                 "total_vaults": len(owned_vaults),
-                "vaults": vault_summaries,
+                "vaults": [{k: v for k, v in s.items() if not k.startswith("_")} for s in vault_summaries],
             })
         else:
             rows = []
             for v in vault_summaries:
+                if "error" in v:
+                    rows.append([v["vault"], "ERR", "ERR", "ERR", "ERR"])
+                    continue
                 rows.append([
-                    format_address(v["vault"]),
-                    "N/A",
-                    "N/A",
-                    "N/A",
-                    "N/A",
+                    v["vault"],
+                    format_hf(v["_ext_raw"]),
+                    format_hf(v["_in_raw"]),
+                    format_value(v["external_debt_value"], v["value_unit"]),
+                    v["risk"],
                 ])
-
             output_table(
                 ["Vault", "Ext HF", "Int HF", "Ext Debt", "Risk"],
                 rows,

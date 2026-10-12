@@ -1,9 +1,9 @@
 """MegaETH factory integration tests against Anvil fork on chain 4326.
 
 Aave-only — MegaETH has no Euler operator deployment. Verifies that
-`createCollateralVault` works end-to-end with the v1.0.5 IV-passthrough
-arg order and that the CLI's `tx factory create-vault` / `open-position`
-commands wire through cleanly when the user supplies the IV address directly.
+`createAaveV3CollateralVault` works end-to-end and that the CLI's
+`tx factory create-vault` / `open-position` commands wire through cleanly
+when the user supplies the IV address directly.
 """
 
 from __future__ import annotations
@@ -32,12 +32,12 @@ class TestFactoryAaveCreateVault:
     """Direct factory tests via Ape contract calls + raw RPC fallback."""
 
     def test_simulate_aave_create(self, megaeth_vm_configured, test_account_megaeth):
-        """`createCollateralVault` Aave simulation succeeds with v1.0.5 args."""
+        """`createAaveV3CollateralVault` Aave simulation succeeds."""
         factory = collateral_vault_factory()
         sim = simulate_tx(
             factory,
-            "createCollateralVault",
-            [1, AAVE_INTERMEDIATE_VAULT, AAVE_POOL, DEFAULT_LIQ_LTV, USDM],
+            "createAaveV3CollateralVault",
+            [AAVE_INTERMEDIATE_VAULT, AAVE_POOL, DEFAULT_LIQ_LTV, USDM],
             sender=test_account_megaeth,
         )
         assert sim["success"] is True, f"simulation failed: {sim.get('error')}"
@@ -48,8 +48,8 @@ class TestFactoryAaveCreateVault:
         factory = collateral_vault_factory()
         sim = simulate_through_evc(
             factory,
-            "createCollateralVault",
-            [1, AAVE_INTERMEDIATE_VAULT, AAVE_POOL, DEFAULT_LIQ_LTV, USDM],
+            "createAaveV3CollateralVault",
+            [AAVE_INTERMEDIATE_VAULT, AAVE_POOL, DEFAULT_LIQ_LTV, USDM],
             sender=test_account_megaeth,
         )
         assert sim["success"] is True, f"EVC simulation failed: {sim.get('error')}"
@@ -89,8 +89,8 @@ class TestFactoryAaveErrors:
         factory = collateral_vault_factory()
         sim = simulate_through_evc(
             factory,
-            "createCollateralVault",
-            [1, AAVE_INTERMEDIATE_VAULT, AAVE_POOL, DEFAULT_LIQ_LTV, ZERO_ADDRESS],
+            "createAaveV3CollateralVault",
+            [AAVE_INTERMEDIATE_VAULT, AAVE_POOL, DEFAULT_LIQ_LTV, ZERO_ADDRESS],
             sender=test_account_megaeth,
         )
         assert sim["success"] is False
@@ -101,8 +101,8 @@ class TestFactoryAaveErrors:
         factory = collateral_vault_factory()
         sim = simulate_through_evc(
             factory,
-            "createCollateralVault",
-            [1, USDE, AAVE_POOL, DEFAULT_LIQ_LTV, USDM],
+            "createAaveV3CollateralVault",
+            [USDE, AAVE_POOL, DEFAULT_LIQ_LTV, USDM],
             sender=test_account_megaeth,
         )
         assert sim["success"] is False

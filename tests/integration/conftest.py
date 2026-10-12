@@ -1,7 +1,7 @@
 """Shared fixtures for integration tests against Anvil fork.
 
 Prerequisites:
-    anvil --fork-url $RPC_URL_1 --fork-block-number 25040000 --port 8454 --accounts 10 --balance 10000
+    anvil --fork-url $RPC_URL_1 --fork-block-number 25982234 --port 8454 --accounts 10 --balance 10000
 
 The fork URL is loaded at import time from `<repo-root>/.env` (key `RPC_URL_1`)
 or from the shell environment, in that order. An explicit `ANVIL_FORK_URL`
@@ -42,7 +42,7 @@ _load_dotenv()
 
 
 # ---------------------------------------------------------------------------
-# Addresses (mainnet at block 25040000 — post v1.0.5 contract upgrade)
+# Addresses (mainnet at block 25982234 — post v1.0.7 upgrade and October listing)
 # ---------------------------------------------------------------------------
 ANVIL_RPC = os.environ.get("ANVIL_RPC_URL", "http://localhost:8454")
 # Fork RPC: explicit ANVIL_FORK_URL wins; otherwise fall back to RPC_URL_1
@@ -53,7 +53,7 @@ FORK_RPC = (
     or os.environ.get("RPC_URL_1")
     or "https://ethereum-rpc.publicnode.com"
 )
-FORK_BLOCK = 25040000
+FORK_BLOCK = 25982234
 WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 WSTETH = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
 EULER_EWETH = "0xD8b27CF359b7D15710a5BE299AF6e7Bf904984C2"  # Euler eWETH vault token
@@ -73,12 +73,12 @@ VAULT_MANAGER_OWNER = "0x8C54cb62900Ec252E7992C85a5b7078A8AF4Fd7F"
 EULER_TARGET_VAULT = "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9"  # Euler USDC vault
 AAVE_V3_POOL = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"  # Aave V3 Pool (target vault for Aave)
 DEFAULT_LIQ_LTV = 9000  # 90% in basis points (must be > ~8700 for this pair)
-MAX_TWYNE_LTV = 9400  # 94% — governance max for this Euler IV at block 25040000 (post v1.0.5)
+MAX_TWYNE_LTV = 9400  # 94% — governance max for this Euler IV at block 25982234 (post v1.0.5)
 MAX_AAVE_LTV = 9800  # 98% — governance max for Aave awstETH IV
 EXTERNAL_LIQ_BUFFER = 10000  # 100% (beta_safe = 1.0)
 TWYNE_EVC = "0xef39D6493884C4C84D38a4bFF879Ce16CEdE702a"
 EULER_EVC = "0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"
-HEALTH_STAT_VIEWER = "0x0dd9065c998E75657BcE6C3a11d7F5AbA5CBdbD4"
+HEALTH_STAT_VIEWER = "0xf88A9f96fa0798Ed322CD0e60435e4F111059DEf"
 
 # Operators
 EULER_LEVERAGE_OP = "0x335AB81f1C3d9f72639004d3e982902458CF29b3"
@@ -164,111 +164,20 @@ def _deal_weth(sender_account, amount_wei):
 
 
 def _configure_vault_manager():
-    """Configure VaultManager params needed for vault creation at block 24520000.
+    """Verify the deployed Euler pair without changing governance parameters."""
+    from twyne_cli.contracts import credit_vault, vault_manager
 
-    At this block, maxTwyneLTVs and externalLiqBuffers are 0 for all IVs.
-    We impersonate the VaultManager owner to set them.
-
-    Idempotent: skips if already configured.
-    """
-    from eth_abi import encode as abi_encode
-
-    # Check if already configured (idempotent — safe to re-run)
-    selector = bytes.fromhex("7b6b8447")  # maxTwyneLTVs(address)
-    call_data = selector + abi_encode(["address"], [EULER_EWETH_IV])
-    result = _rpc_call("eth_call", [{"to": VAULT_MANAGER, "data": "0x" + call_data.hex()}, "latest"])
-    current_ltv = int(result, 16) if result else 0
-    if current_ltv == MAX_TWYNE_LTV:
-        return  # Already configured
-
-    _set_balance(VAULT_MANAGER_OWNER, hex(10 * 10**18))
-    _impersonate(VAULT_MANAGER_OWNER)
-
-    # v1.0.5: setMaxLiquidationLTV(address,uint16,uint32) — selector 0x389bd6b4
-    # rampDuration=0 means instant change (no ramp).
-    calldata = bytes.fromhex("389bd6b4") + abi_encode(
-        ["address", "uint16", "uint32"], [EULER_EWETH_IV, MAX_TWYNE_LTV, 0]
-    )
-    tx1 = _rpc_call("eth_sendTransaction", [{
-        "from": VAULT_MANAGER_OWNER,
-        "to": VAULT_MANAGER,
-        "data": "0x" + calldata.hex(),
-        "gas": hex(100_000),
-    }])
-    r1 = _wait_for_receipt(tx1)
-    assert r1["status"] == "0x1", f"setMaxLiquidationLTV failed: {r1}"
-
-    # v1.0.5: setExternalLiqBuffer(address,uint16,uint32) — selector 0xe17e20bd
-    calldata = bytes.fromhex("e17e20bd") + abi_encode(
-        ["address", "uint16", "uint32"], [EULER_EWETH_IV, EXTERNAL_LIQ_BUFFER, 0]
-    )
-    tx2 = _rpc_call("eth_sendTransaction", [{
-        "from": VAULT_MANAGER_OWNER,
-        "to": VAULT_MANAGER,
-        "data": "0x" + calldata.hex(),
-        "gas": hex(100_000),
-    }])
-    r2 = _wait_for_receipt(tx2)
-    assert r2["status"] == "0x1", f"setExternalLiqBuffer failed: {r2}"
-
-    _stop_impersonate(VAULT_MANAGER_OWNER)
+    debt = credit_vault(EULER_TARGET_VAULT).asset()
+    assert tuple(vault_manager().liqParams(EULER_EWETH_IV, debt)) == (10000, 9400, 0)
 
 
 def _configure_aave_vault_manager():
-    """Configure VaultManager params for Aave awstETH IV at block 24520000.
+    """Verify the deployed Aave pair without changing governance parameters."""
+    from twyne_cli.contracts import vault_manager
 
-    Sets maxTwyneLTV, externalLiqBuffer, and allowedTargetAsset (WETH)
-    for the Aave intermediate vault. Mirrors the Foundry test setup in
-    AaveTestBase.t.sol (lines 120-124). Idempotent.
-    """
-    from eth_abi import encode as abi_encode
-
-    # Check if already configured
-    selector = bytes.fromhex("7b6b8447")  # maxTwyneLTVs(address)
-    call_data = selector + abi_encode(["address"], [AAVE_AWSTETH_IV])
-    result = _rpc_call("eth_call", [{"to": VAULT_MANAGER, "data": "0x" + call_data.hex()}, "latest"])
-    current_ltv = int(result, 16) if result else 0
-    if current_ltv == MAX_AAVE_LTV:
-        return  # Already configured
-
-    _set_balance(VAULT_MANAGER_OWNER, hex(10 * 10**18))
-    _impersonate(VAULT_MANAGER_OWNER)
-
-    # v1.0.5: setMaxLiquidationLTV(address,uint16,uint32) — selector 0x389bd6b4
-    calldata = bytes.fromhex("389bd6b4") + abi_encode(
-        ["address", "uint16", "uint32"], [AAVE_AWSTETH_IV, MAX_AAVE_LTV, 0]
-    )
-    tx1 = _rpc_call("eth_sendTransaction", [{
-        "from": VAULT_MANAGER_OWNER, "to": VAULT_MANAGER,
-        "data": "0x" + calldata.hex(), "gas": hex(100_000),
-    }])
-    r1 = _wait_for_receipt(tx1)
-    assert r1["status"] == "0x1", f"setMaxLiquidationLTV (Aave) failed: {r1}"
-
-    # v1.0.5: setExternalLiqBuffer(address,uint16,uint32) — selector 0xe17e20bd
-    calldata = bytes.fromhex("e17e20bd") + abi_encode(
-        ["address", "uint16", "uint32"], [AAVE_AWSTETH_IV, EXTERNAL_LIQ_BUFFER, 0]
-    )
-    tx2 = _rpc_call("eth_sendTransaction", [{
-        "from": VAULT_MANAGER_OWNER, "to": VAULT_MANAGER,
-        "data": "0x" + calldata.hex(), "gas": hex(100_000),
-    }])
-    r2 = _wait_for_receipt(tx2)
-    assert r2["status"] == "0x1", f"setExternalLiqBuffer (Aave) failed: {r2}"
-
-    # setAllowedTargetAsset(address,address,address) — selector 0xa21e8cb3
-    # Allows WETH as target asset for Aave awstETH IV + Aave V3 Pool
-    calldata = bytes.fromhex("a21e8cb3") + abi_encode(
-        ["address", "address", "address"], [AAVE_AWSTETH_IV, AAVE_V3_POOL, WETH]
-    )
-    tx3 = _rpc_call("eth_sendTransaction", [{
-        "from": VAULT_MANAGER_OWNER, "to": VAULT_MANAGER,
-        "data": "0x" + calldata.hex(), "gas": hex(100_000),
-    }])
-    r3 = _wait_for_receipt(tx3)
-    assert r3["status"] == "0x1", f"setAllowedTargetAsset (Aave) failed: {r3}"
-
-    _stop_impersonate(VAULT_MANAGER_OWNER)
+    vm = vault_manager()
+    assert tuple(vm.liqParams(AAVE_AWSTETH_IV, WETH)) == (9999, 9800, 200)
+    assert vm.isAllowedTargetAssets(AAVE_AWSTETH_IV, AAVE_V3_POOL, WETH)
 
 
 def _increase_iv_supply_cap():
@@ -529,17 +438,12 @@ def _set_ltv_via_evc(sender_account, cv_address, ltv):
 # Vault creation helper (low-level raw-RPC fixture for test setup)
 # ---------------------------------------------------------------------------
 
-# v1.0.5 factory signature:
-#   createCollateralVault(uint8 _vaultType, address _intermediateVault,
-#                         address _targetVault, uint256 _liqLTV, address _targetAsset)
-# requires callThroughEVC (calls must go through EVC.batch()).
-#
-# Note: pre-v1.0.5 the 2nd arg was "asset" (eVault token) and the 5th was the
-# intermediate vault. v1.0.5 swapped these semantically (selector unchanged
-# because the type signature is identical). _targetAsset = ZERO_ADDRESS lets
-# the factory derive it from the target vault.
-
-_FACTORY_SELECTOR = bytes.fromhex("3c7269d1")  # createCollateralVault(uint8,address,address,uint256,address)
+# Factory typed create entrypoints:
+#   createEulerCollateralVault(address _intermediateVault, address _targetVault, uint256 _liqLTV)
+#   createAaveV3CollateralVault(address _intermediateVault, address _targetVault, uint256 _liqLTV, address _targetAsset)
+# Both require callThroughEVC (calls must go through EVC.batch()).
+_EULER_CREATE_SELECTOR = bytes.fromhex("e6cfeae4")   # createEulerCollateralVault(address,address,uint256)
+_AAVE_CREATE_SELECTOR = bytes.fromhex("4f094ba4")    # createAaveV3CollateralVault(address,address,uint256,address)
 _EVC_CALL_SELECTOR = bytes.fromhex("1f8b5215")  # call(address,address,uint256,bytes)
 # T_CollateralVaultCreated(address indexed vault) — stored without 0x prefix
 # to avoid secret-pattern false positive (keccak hash is 32 bytes = 64 hex chars)
@@ -554,14 +458,14 @@ def _create_vault_via_evc(
     liq_ltv=DEFAULT_LIQ_LTV,
     target_asset=ZERO_ADDRESS,
 ):
-    """Create a collateral vault via EVC.batch() with the v1.0.5 factory signature.
+    """Create a collateral vault via EVC.batch() using the typed create entrypoint.
 
     Args:
-        vault_type: 0 = Euler, 1 = Aave V3
+        vault_type: 0 = Euler (createEulerCollateralVault), 1 = Aave V3 (createAaveV3CollateralVault)
         intermediate_vault: Twyne intermediate vault (CreditEVault) address
         target_vault: Must be an allowed target vault in VaultManager
         liq_ltv: Liquidation LTV in basis points (e.g. 9000 = 90%)
-        target_asset: Debt asset; ZERO_ADDRESS lets the factory derive from target_vault
+        target_asset: Debt asset (Aave only); ignored for Euler
 
     Returns the new vault address as a string.
     """
@@ -569,11 +473,19 @@ def _create_vault_via_evc(
 
     caller = str(sender_account.address)
 
-    # Encode factory calldata (v1.0.5 arg order)
-    factory_calldata = _FACTORY_SELECTOR + abi_encode(
-        ["uint8", "address", "address", "uint256", "address"],
-        [vault_type, intermediate_vault, target_vault, liq_ltv, target_asset],
-    )
+    # Encode factory calldata using the typed create entrypoint for vault_type.
+    # Euler V2 (0): createEulerCollateralVault(iv, target, liqLTV)
+    # Aave V3 (1): createAaveV3CollateralVault(iv, target, liqLTV, targetAsset)
+    if vault_type == 0:
+        factory_calldata = _EULER_CREATE_SELECTOR + abi_encode(
+            ["address", "address", "uint256"],
+            [intermediate_vault, target_vault, liq_ltv],
+        )
+    else:
+        factory_calldata = _AAVE_CREATE_SELECTOR + abi_encode(
+            ["address", "address", "uint256", "address"],
+            [intermediate_vault, target_vault, liq_ltv, target_asset],
+        )
 
     # Factory has _callThroughEVC modifier — must call via EVC.batch(), not directly.
     # Direct calls fail with EVC_EmptyError (0x38ae747c) because EVC can't
@@ -643,15 +555,7 @@ def ape_provider(anvil_available):
 
 @pytest.fixture(scope="session")
 def vault_manager_configured(ape_provider):
-    """Configure VaultManager LTV params and IV supply cap.
-
-    At block 24520000, maxTwyneLTVs and externalLiqBuffers are 0 for all IVs.
-    The IV supply cap is ~7 eWETH which gets exhausted by accumulated test deposits
-    (no per-test state isolation). This fixture:
-    1. Sets Euler VaultManager LTV params (impersonates VaultManager owner)
-    2. Sets Aave VaultManager LTV params + allowedTargetAsset
-    3. Increases IV supply cap to 100 eWETH (impersonates IV governor)
-    """
+    """Verify deployed pair parameters and raise only the local IV test cap."""
     _configure_vault_manager()
     _configure_aave_vault_manager()
     _increase_iv_supply_cap()

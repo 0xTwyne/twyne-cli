@@ -30,7 +30,7 @@ def test_registry_has_mainnet_and_megaeth():
 
 
 def test_supported_slugs_match_registry():
-    assert set(supported_slugs()) == {"mainnet", "megaeth"}
+    assert set(supported_slugs()) == {"mainnet", "megaeth", "arbitrum"}
 
 
 def test_megaeth_capability_flags():

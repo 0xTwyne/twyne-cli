@@ -65,15 +65,15 @@ class TestCreateVault:
     def test_cli_factory_simulation_succeeds(self, test_account):
         """simulate_tx with correct v2 ABI and args succeeds.
 
-        The factory's createCollateralVault takes 5 args:
-        (vaultType, asset, targetVault, liqLTV, targetAsset).
+        The factory's typed Euler entrypoint createEulerCollateralVault takes 3 args:
+        (intermediateVault, targetVault, liqLTV).
         eth_call bypasses the callThroughEVC modifier, so simulation works.
         """
         factory = collateral_vault_factory()
         sim = simulate_tx(
             factory,
-            "createCollateralVault",
-            [0, EULER_EWETH_IV, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV, ZERO_ADDRESS],
+            "createEulerCollateralVault",
+            [EULER_EWETH_IV, EULER_TARGET_VAULT, DEFAULT_LIQ_LTV],
             sender=test_account,
         )
         assert sim["success"] is True

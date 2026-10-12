@@ -1,0 +1,69 @@
+[
+  {
+    "type": "function",
+    "name": "multicall",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "calls",
+        "type": "bytes[]"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "swap",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "params",
+        "type": "tuple",
+        "internalType": "struct ISwapper.SwapParams",
+        "components": [
+          {
+            "name": "handler",
+            "type": "bytes32"
+          },
+          {
+            "name": "mode",
+            "type": "uint256"
+          },
+          {
+            "name": "account",
+            "type": "address"
+          },
+          {
+            "name": "tokenIn",
+            "type": "address"
+          },
+          {
+            "name": "tokenOut",
+            "type": "address"
+          },
+          {
+            "name": "vaultIn",
+            "type": "address"
+          },
+          {
+            "name": "accountIn",
+            "type": "address"
+          },
+          {
+            "name": "receiver",
+            "type": "address"
+          },
+          {
+            "name": "amountOut",
+            "type": "uint256"
+          },
+          {
+            "name": "data",
+            "type": "bytes"
+          }
+        ]
+      }
+    ],
+    "outputs": []
+  }
+]

@@ -62,7 +62,26 @@ class TwyneContext:
                 f"`twyne config set-rpc <url> --chain {self.chain.slug}`."
             )
         self._provider_ctx.__enter__()
+        self._register_multicall3()
         return self
+
+    @staticmethod
+    def _register_multicall3() -> None:
+        """Cache the Multicall3 contract type so Ape never asks an explorer for it.
+
+        Ape knows Multicall3 on mainnet; on custom networks (Arbitrum, MegaETH) its
+        first lookup goes to Etherscan and logs an API-key error before falling back.
+        """
+        try:
+            from ape import chain
+            from ape_ethereum.multicall.constants import MULTICALL3_ADDRESS, MULTICALL3_CONTRACT_TYPE
+            from ethpm_types import ContractType
+
+            chain.contracts.cache_contract_type(
+                MULTICALL3_ADDRESS, ContractType.model_validate(MULTICALL3_CONTRACT_TYPE)
+            )
+        except Exception:
+            pass
 
     def disconnect(self):
         """Exit Ape network context."""

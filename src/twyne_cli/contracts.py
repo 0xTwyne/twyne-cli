@@ -5,13 +5,13 @@ import os
 from importlib import resources
 
 from .chains import ChainSpec, active_chain
-from .exceptions import EulerNotSupportedError, OperatorsNotSupportedError
+from .exceptions import EulerNotSupportedError, MorphoNotSupportedError, OperatorsNotSupportedError
 
 
 def _contract(address, abi):
     """Lazy wrapper around ape.Contract — defers ape import to first use."""
     from ape import Contract
-    return Contract(address, abi=abi)
+    return Contract(address, abi=abi, fetch_from_explorer=False, detect_proxy=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -23,6 +23,8 @@ _ABI_CACHE: dict[str, list] = {}
 
 def _load_abi(name: str) -> list:
     """Load an ABI JSON file by contract name (cached)."""
+    if active_chain().legacy_contracts and name in {"CollateralVault", "CollateralVaultFactory", "VaultManager"}:
+        name += "Legacy"
     if name not in _ABI_CACHE:
         ref = resources.files("twyne_cli") / "abis" / f"{name}.json"
         _ABI_CACHE[name] = json.loads(ref.read_text())
@@ -95,6 +97,24 @@ def collateral_vault(address: str):
     return _contract(address, abi=_load_abi("CollateralVault"))
 
 
+def morpho_collateral_vault(address: str):
+    """Get a MorphoCollateralVault instance (marketId, marketParams, collateralBalance)."""
+    return _contract(address, abi=_load_abi("MorphoCollateralVault"))
+
+
+def uses_pair_risk() -> bool:
+    """1.0.7 deployments (mainnet, Arbitrum) key risk params by pair; MegaETH is legacy."""
+    return not active_chain().legacy_contracts
+
+
+def asset_zap():
+    """Get the AssetZap periphery used for underlying collateral deposits."""
+    address = get_address("assetZap")
+    if not address:
+        raise click_exception(f"No AssetZap is configured for chain {active_chain().chain_id}.")
+    return _contract(address, abi=_load_abi("AssetZap"))
+
+
 def credit_vault(address: str):
     """Get a credit/intermediate vault (EVault) instance at a given address."""
     return _contract(address, abi=_load_abi("EVault"))
@@ -127,6 +147,41 @@ def intermediate_vaults() -> dict[str, str]:
     return addrs.get("intermediateVaults", {})
 
 
+def target_vaults() -> dict[str, str]:
+    """Return dict of target debt-vault name → address for the active chain."""
+    addrs = _load_addresses()
+    return addrs.get("targetVaults", {})
+
+
+def morpho():
+    """Get the Morpho Blue singleton for the active chain."""
+    chain = active_chain()
+    if not chain.supports_morpho:
+        raise MorphoNotSupportedError(chain)
+    return _contract(get_address("morpho"), abi=_load_abi("Morpho"))
+
+
+def morpho_oracle(address: str):
+    """Get a Morpho market oracle (price() is collateral→loan token, 1e36 scaled)."""
+    return _contract(address, abi=_load_abi("MorphoOracle"))
+
+
+def health_stat_viewer():
+    """Get the chain's HealthStatViewer lens (health() / positionStats())."""
+    address = get_address("healthStatViewer")
+    if not address:
+        raise click_exception(f"No HealthStatViewer is configured for chain {active_chain().chain_id}.")
+    return _contract(address, abi=_load_abi("HealthStatViewer"))
+
+
+def swapper_address() -> str:
+    """The EVK Swapper the Twyne operators and AssetZap call (their SWAPPER())."""
+    address = get_address("swapper")
+    if not address:
+        raise click_exception(f"No swapper is configured for chain {active_chain().chain_id}.")
+    return address
+
+
 def evc(address: str | None = None):
     """Get EVC contract instance (Twyne EVC by default)."""
     addr = address or get_address("evc")
@@ -151,33 +206,44 @@ def _check_operators_supported() -> None:
         raise OperatorsNotSupportedError(chain)
 
 
-def leverage_operator(protocol: str = "euler"):
-    """Get leverage operator contract. Protocol: 'euler' or 'aave'."""
+_OPERATOR_KEYS = {
+    "leverage": {"euler": "eulerLeverageOperator", "aave": "aaveV3LeverageOperator", "morpho": "operators.morphoLeverageOperator"},
+    "deleverage": {"euler": "eulerDeleverageOperator", "aave": "aaveV3DeleverageOperator", "morpho": "operators.morphoDeleverageOperator"},
+    "teleport": {"aave": "aaveV3TeleportOperator", "morpho": "operators.morphoTeleportOperator"},
+}
+
+_OPERATOR_ABIS = {
+    "leverage": {"morpho": "MorphoLeverageOperator"},
+    "deleverage": {"morpho": "MorphoDeleverageOperator"},
+    "teleport": {"morpho": "MorphoTeleportOperator"},
+}
+
+_DEFAULT_OPERATOR_ABIS = {"leverage": "LeverageOperator", "deleverage": "DeleverageOperator", "teleport": "TeleportOperator"}
+
+
+def _operator(kind: str, protocol: str):
     _check_operators_supported()
-    key = "eulerLeverageOperator" if protocol == "euler" else "aaveV3LeverageOperator"
-    addr = get_address(key)
+    key = _OPERATOR_KEYS[kind].get(protocol)
+    addr = get_address(key) if key else ""
     if not addr:
         raise OperatorsNotSupportedError(active_chain())
-    return _contract(addr, abi=_load_abi("LeverageOperator"))
+    abi = _OPERATOR_ABIS[kind].get(protocol, _DEFAULT_OPERATOR_ABIS[kind])
+    return _contract(addr, abi=_load_abi(abi))
+
+
+def leverage_operator(protocol: str = "euler"):
+    """Get leverage operator contract. Protocol: 'euler', 'aave' or 'morpho'."""
+    return _operator("leverage", protocol)
 
 
 def deleverage_operator(protocol: str = "euler"):
-    """Get deleverage operator contract. Protocol: 'euler' or 'aave'."""
-    _check_operators_supported()
-    key = "eulerDeleverageOperator" if protocol == "euler" else "aaveV3DeleverageOperator"
-    addr = get_address(key)
-    if not addr:
-        raise OperatorsNotSupportedError(active_chain())
-    return _contract(addr, abi=_load_abi("DeleverageOperator"))
+    """Get deleverage operator contract. Protocol: 'euler', 'aave' or 'morpho'."""
+    return _operator("deleverage", protocol)
 
 
-def teleport_operator():
-    """Get Aave teleport operator contract."""
-    _check_operators_supported()
-    addr = get_address("aaveV3TeleportOperator")
-    if not addr:
-        raise OperatorsNotSupportedError(active_chain())
-    return _contract(addr, abi=_load_abi("TeleportOperator"))
+def teleport_operator(protocol: str = "aave"):
+    """Get teleport operator contract. Protocol: 'aave' or 'morpho'."""
+    return _operator("teleport", protocol)
 
 
 def euler_wrapper():

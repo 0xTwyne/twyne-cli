@@ -25,6 +25,15 @@ class ChainSpec:
     ape_ecosystem: str
     ape_network: str
     start_block: int
+    supports_aave: bool = True
+    supports_morpho: bool = False
+    # Deployments still on the pre-1.0.7 contracts (single-key risk params,
+    # depositUnderlying, legacy factory). They load the *Legacy ABIs.
+    legacy_contracts: bool = False
+    # Swap route provider for operator and zap swap legs: "euler" (Euler swap
+    # API, no key) or "enso" (needs the user's own ENSO_API_KEY).
+    swap_provider: str = "euler"
+    explorer_name: str = "Etherscan"
 
     @property
     def addresses_file(self) -> str:
@@ -55,6 +64,24 @@ CHAINS: dict[int, ChainSpec] = {
         ape_ecosystem="ethereum",
         ape_network="megaeth",
         start_block=14_706_831,
+        legacy_contracts=True,
+    ),
+    42161: ChainSpec(
+        chain_id=42161,
+        slug="arbitrum",
+        name="Arbitrum One",
+        default_rpc="https://arb1.arbitrum.io/rpc",
+        env_var="RPC_URL_42161",
+        supports_euler=False,
+        supports_operators=True,
+        ape_ecosystem="ethereum",
+        ape_network="arbitrum",
+        # CollateralVaultFactory 0xb85f30DA4738F11fD94C1f7E6cd69d4aB41C0832 first has code here.
+        start_block=511_922_789,
+        supports_aave=False,
+        supports_morpho=True,
+        swap_provider="enso",
+        explorer_name="Arbiscan",
     ),
 }
 

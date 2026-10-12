@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from .contracts import collateral_vault, erc20
+from .spender_guard import assert_safe_spender
 from .transactions import parse_amount
 
 
@@ -69,7 +70,8 @@ def _encode_collateral_op(fn_name: str, op: dict, on_behalf_of: str, block=None)
     vault_addr = op["vault"]
     cv = collateral_vault(vault_addr)
 
-    asset_addr = cv.asset(block_identifier=block)
+    asset_addr = (cv.targetAsset(block_identifier=block) if fn_name in ("borrow", "repay")
+                  else cv.asset(block_identifier=block))
     token = erc20(asset_addr)
     decimals = token.decimals(block_identifier=block)
 
@@ -109,7 +111,7 @@ def _encode_token_op(fn_name: str, op: dict, on_behalf_of: str, block=None) -> d
 
     if fn_name == "approve":
         raw_amount = parse_amount(op["amount"], decimals)
-        spender = op["spender"]
+        spender = assert_safe_spender(op["spender"])
         data = token.approve.encode_input(spender, raw_amount)
     else:
         raise ValueError(f"Unknown token action: {fn_name}")
