@@ -38,6 +38,7 @@ from ..discover import (
     discover_morpho_positions,
 )
 from ..formatting import format_address
+from ..spender_guard import assert_safe_spender
 from ..swap import extract_multicall_data, get_swap_quote
 from ..transactions import (
     confirm_prompt,
@@ -1135,6 +1136,7 @@ def _evc_operator_batch(evc_instance, operator_address: str, sender: str, inner:
     """enable operator → inner items → disable operator (EVC self-calls use onBehalfOf = zero)."""
     from ..constants import ZERO_ADDRESS
 
+    assert_safe_spender(operator_address, "operator")
     evc_addr = str(evc_instance.address)
     return [
         (evc_addr, ZERO_ADDRESS, 0, evc_instance.setAccountOperator.encode_input(sender, operator_address, True)),
@@ -1303,6 +1305,7 @@ def leverage(ctx: TwyneContext, vault_address, amount, protocol, slippage,
         items = []
 
         # Item 1: Enable operator (EVC self-call → onBehalfOfAccount = zero)
+        assert_safe_spender(op, "operator")
         enable_data = evc_instance.setAccountOperator.encode_input(
             sender_addr, str(op.address), True
         )
@@ -1615,6 +1618,7 @@ def _morpho_teleport(ctx, vault_address, collateral_amount, debt_amount, keep_au
         click.echo("Cancelled.")
         return
 
+    assert_safe_spender(op_addr, "operator")
     granted_here = False
     try:
         if not authorized:
@@ -1748,6 +1752,7 @@ def _build_close_position_batch(
     items = []
 
     # Item 1: Enable operator (EVC self-call → onBehalfOfAccount = zero)
+    assert_safe_spender(operator, "operator")
     enable_data = evc_instance.setAccountOperator.encode_input(
         sender, str(operator.address), True
     )
@@ -2735,6 +2740,7 @@ def _migrate_aave(ctx, position, ltv, account, dry_run, skip_confirm, **gas_extr
     create_data = getattr(fct, create_fn).encode_input(*create_args)
 
     # onBehalfOfAccount must be address(0) when targeting the EVC itself
+    assert_safe_spender(op_addr, "operator")
     enable_op_data = evc_instance.setAccountOperator.encode_input(sender, op_addr, True)
     disable_op_data = evc_instance.setAccountOperator.encode_input(sender, op_addr, False)
 
