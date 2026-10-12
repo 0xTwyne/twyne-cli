@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pt_srusde_loop_n.py — N-times leverage loop: PT-srUSDe ⇆ USDe, in ONE EVC batch.
+pt_srusde_loop_n.py — N-times leverage loop: PT-srUSDe ⇆ USDe, one safe round per loop.
 
 Each loop is the single-iteration operation from `pt_srusde_loop.py`:
 
@@ -8,14 +8,17 @@ Each loop is the single-iteration operation from `pt_srusde_loop.py`:
 
 The borrowed USDe comes out as the *same asset* as the input, only smaller (by the
 liquidation-LTV factor). So the next loop deposits that borrowed USDe, borrows again, and so
-on — building geometric leverage. With `--loops N` all N iterations are bundled into a single
-`EVC.batch(...)`:
+on — building geometric leverage.
 
-  - The EVC transiently custodies the recycled USDe between loops (intermediate borrows are
-    sent to the EVC; the final loop's borrow is delivered to the borrower).
-  - Each loop's downstream amounts are derived from that loop's input via the same
-    timestamp-pinned discovery pass (srUSDe is yield-bearing — pinning block.timestamp makes
-    discovery byte-identical to execution), so the static batch is exact and leaks no value.
+Incident 95524: the EVC never custodies tokens and never receives an allowance. Each loop is
+three borrower txs (`base.execute_round`): a direct Strata deposit, a direct Pendle swap (both
+pull only from the borrower and pay the borrower), then `EVC.batch([CV.depositUnderlying,
+CV.borrow -> borrower])`. The borrowed USDe lands in the borrower wallet and funds the next
+loop. Rounds are not atomic with each other; after every round the position is at the target.
+
+Each loop's amounts come from a timestamp-pinned discovery pass on a fork (srUSDe is
+yield-bearing — pinning block.timestamp makes the fork execution identical to discovery).
+Live, each leg re-reads the amount the previous leg really delivered.
 
 Same interface as the single-loop script, plus `--loops N`. Borrow per loop is sized to the
 target HF / LTV (required, since each loop must borrow to recycle).
@@ -111,43 +114,6 @@ def discover_loops(
     return out
 
 
-def build_n_items(cfg: CVConfig, iters: list[dict], *, exact: bool):
-    """Assemble the EVC batch items for all loops.
-
-    Loop 1 pulls the borrower's USDe into the EVC; later loops reuse the recycled USDe already
-    in the EVC. Intermediate borrows go to the EVC; the final loop's borrow goes to the borrower.
-    """
-    b = cfg.borrower
-    n = len(iters)
-    items: list[tuple[str, str, int, str]] = []
-    for i, it in enumerate(iters):
-        dep_usde = it["deposit"]
-        if i == 0:
-            items.append(
-                (
-                    cfg.usde,
-                    b,
-                    0,
-                    cd("transferFrom(address,address,uint256)", ["address", "address", "uint256"], [b, EVC, dep_usde]),
-                )
-            )
-        items.append((cfg.usde, b, 0, base._approve_cd(STRATA_DEPOSITOR, dep_usde)))
-        items.append((STRATA_DEPOSITOR, b, 0, base._strata_deposit_cd(cfg, dep_usde, EVC)))
-        items.append((SRUSDE, b, 0, base._approve_cd(it["pendle_to"], it["srusde_out"])))
-        items.append((it["pendle_to"], b, 0, it["pendle_data"]))
-        deposit_pt = it["pt_out"] if exact else it["min_pt"]
-        items.append((cfg.cv, b, 0, cd("depositUnderlying(uint256)", ["uint256"], [deposit_pt])))
-        if it["borrow"] > 0:
-            receiver = b if i == n - 1 else EVC  # last borrow -> borrower; earlier -> recycle in EVC
-            items.append(
-                (cfg.cv, b, 0, cd("borrow(uint256,address)", ["uint256", "address"], [it["borrow"], receiver]))
-            )
-    return items
-
-
-# =======================================================================================
-# Reporting
-# =======================================================================================
 def print_loops(cfg: CVConfig, iters: list[dict], *, start: int, target_desc: str):
     click.echo("\n── Leverage loop plan " + "─" * 43)
     click.echo(f"  CV            {cfg.cv}")
@@ -180,21 +146,21 @@ def run_on_fork(ch: Chain, cfg: CVConfig, *, start: int, loops: int, slippage: f
     iters = discover_loops(ch, cfg, start=start, loops=loops, T=T, slippage=slippage, targets=targets)
     print_loops(cfg, iters, start=start, target_desc=_target_desc(targets))
 
-    batch = base._encode_batch(build_n_items(cfg, iters, exact=True))
     usde0 = ch.erc20_balance(cfg.usde, b)
-    ch.set_next_ts(T)
-    try:
-        ch.call(EVC, batch, frm=b)
-    except Exception as e:
-        click.echo(f"\n  ✗ batch would revert: {repr(e)[:240]}")
-        raise click.ClickException("batch reverted in simulation")
-    rc = ch.send_impersonated(b, EVC, batch, ts=T)
+    sx = base.Sender(ch, b, ts=T, max_approve=max_approve)
+    rcs = []
+    for it in iters:
+        res = base.execute_round(
+            sx, cfg, usde_in=it["deposit"], slippage=slippage, borrow_for_pt=lambda _pt, it=it: it["borrow"],
+            quote=(it["srusde_out"], it["pendle_to"], it["pendle_data"], it["min_pt"]),
+        )
+        rcs.append(res["rc"])
     after = read_cv_state(ch.rpc_url, base.HSV, cfg.cv, "latest")
 
     click.echo("\n── Result (fork) " + "─" * 48)
-    click.echo(
-        f"  batch status: {'OK' if int(rc['status'], 16) else 'FAILED'}  gas={int(rc['gasUsed'], 16)}  items={len(build_n_items(cfg, iters, exact=True))}"
-    )
+    ok = all(int(rc["status"], 16) for rc in rcs)
+    gas = sum(int(rc["gasUsed"], 16) for rc in rcs)
+    click.echo(f"  {len(rcs)} EVC batch(es): {'OK' if ok else 'FAILED'}  gas={gas} (batches only)")
     base.print_position("before", before)
     base.print_position("after", after)
     usde_delta = (ch.erc20_balance(cfg.usde, b) - usde0) / WAD
@@ -223,57 +189,26 @@ def run_live(
         fch.send_impersonated(fcfg.borrower, fcfg.usde, base._approve_cd(STRATA_DEPOSITOR, base.BIG_APPROVE))
         T = fch.latest_ts + 1
         iters = discover_loops(fch, fcfg, start=start, loops=loops, T=T, slippage=slippage, targets=targets)
-    # Live can't pin block.timestamp: re-quote each loop's Pendle with a shaved srUSDe input
-    # (base.LIVE_SRUSDE_BUFFER_BPS) so no swap comes up short, and deposit each loop's floor.
-    # Recycled USDe amounts (CV.borrow outputs) are exact, so the per-loop deposit chain holds.
-    live_iters = []
-    for it in iters:
-        shave = max(int(it["srusde_out"] * base.LIVE_SRUSDE_BUFFER_BPS / 10_000), 1)
-        srusde_in = it["srusde_out"] - shave
-        ptt, pdata, pt_q, min_pt = base._pendle_quote(srusde_in, cfg.borrower, slippage)
-        live_iters.append(dict(it, srusde_out=srusde_in, pt_out=pt_q, min_pt=min_pt, pendle_to=ptt, pendle_data=pdata))
-    print_loops(cfg, live_iters, start=start, target_desc=_target_desc(targets))
-    click.echo(f"  live drift buffer: {base.LIVE_SRUSDE_BUFFER_BPS:g} bps srUSDe per loop")
-
-    apps = base.needed_approvals(
-        ch, cfg, base.Plan(start, 0, 0, 0, 0, base.PENDLE_ROUTER, "0x", ""), deposit_amt=start, max_approve=max_approve
-    )
-    apps = [a for a in apps if a["spender"] != cfg.cv]  # PT approval must cover the SUM of per-loop deposits
-    pt_need = sum(it["min_pt"] for it in live_iters)
-    if ch.erc20_allowance(cfg.pt, cfg.borrower, cfg.cv) < pt_need:
-        apps.append(
-            dict(
-                token=cfg.pt,
-                spender=cfg.cv,
-                amount=(base.MAX_UINT if max_approve else pt_need),
-                label="PT-srUSDe -> CV (depositUnderlying, all loops)",
-            )
-        )
-    if apps:
-        click.echo("\n  Approvals required:")
-        for a in apps:
-            click.echo(f"    - {a['label']}")
-    if not yes and not click.confirm("\nSubmit approvals + EVC batch to the live chain?", default=False):
+    print_loops(cfg, iters, start=start, target_desc=_target_desc(targets))
+    click.echo(f"  live: {len(iters)} round(s) x 3 txs (Strata, Pendle, EVC batch) + approvals as needed.")
+    click.echo("  Each round re-quotes Pendle for the srUSDe really minted and scales the borrow to the PT received.")
+    if not yes and not click.confirm("\nSubmit approvals + all rounds to the live chain?", default=False):
         click.echo("Aborted.")
         return
 
     before = read_cv_state(ch.rpc_url, base.HSV, cfg.cv, "latest")
-    for a in apps:
-        base._broadcast_signed(
-            ch, signer, a["token"], base._approve_cd(a["spender"], a["amount"]), label=a["label"], require_success=True
+    sx = base.Sender(ch, cfg.borrower, signer=signer, max_approve=max_approve)
+    usde_in = start
+    for i, it in enumerate(iters):
+        if usde_in <= 0:
+            break
+        res = base.execute_round(
+            sx, cfg, usde_in=usde_in, slippage=slippage,
+            borrow_for_pt=lambda pt, it=it: (it["borrow"] * pt // it["pt_out"]) if it["pt_out"] else it["borrow"],
         )
-    base._confirm_allowances(ch, cfg.borrower, [(cfg.usde, EVC, start), (cfg.pt, cfg.cv, pt_need)])
-
-    batch = base._encode_batch(build_n_items(cfg, live_iters, exact=False))
-    try:
-        ch.call(EVC, batch, frm=cfg.borrower)  # decoded pre-check before spending gas
-    except Exception as e:
-        raise click.ClickException(f"batch pre-check reverted (nothing broadcast): {repr(e)[:240]}")
-    rc = base._broadcast_signed(ch, signer, EVC, batch, label="EVC batch")
-    status = int(rc["status"], 16)
-    click.echo(
-        f"\n  batch tx: {rc['transactionHash']}  status={'OK' if status else 'FAILED'}  gas={int(rc['gasUsed'], 16)}"
-    )
+        rc = res["rc"]
+        click.echo(f"  round {i + 1}: EVC batch {rc['transactionHash']}  borrow {res['borrow'] / WAD:.6f} USDe")
+        usde_in = res["borrow"]  # recycle through the borrower wallet, never the EVC
     after = read_cv_state(ch.rpc_url, base.HSV, cfg.cv, "latest")
     base.print_position("before", before)
     base.print_position("after", after)
@@ -351,7 +286,7 @@ def main(
     max_approve,
     yes,
 ):
-    """Build N geometric leverage loops (PT-srUSDe ⇆ USDe) in a single EVC batch."""
+    """Build N geometric leverage loops (PT-srUSDe ⇆ USDe), one safe round per loop."""
     if do_execute and dry_run:
         raise click.ClickException("--dry-run and --execute are mutually exclusive")
     if loops < 1:

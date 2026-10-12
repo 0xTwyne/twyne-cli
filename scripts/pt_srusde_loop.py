@@ -1,27 +1,32 @@
 #!/usr/bin/env python3
 """
-pt_srusde_loop.py — Complete a full PT-srUSDe ⇆ USDe loop on Twyne in ONE EVC batch.
+pt_srusde_loop.py — Complete a full PT-srUSDe ⇆ USDe loop on Twyne.
 
-The loop, mirroring four production transactions but bundled atomically:
+The loop, mirroring four production transactions:
 
-    1. USDe        -> srUSDe      (Strata TrancheDepositor.deposit)
-    2. srUSDe      -> PT-srUSDe   (Pendle Router V4.swapExactTokenForPt)
-    3. PT-srUSDe   -> collateral  (CollateralVault.depositUnderlying, wraps to Aave waToken)
-    4. borrow USDe                (CollateralVault.borrow)
+    1. USDe        -> srUSDe      (Strata TrancheDepositor.deposit, direct tx from the borrower)
+    2. srUSDe      -> PT-srUSDe   (Pendle Router V4 swap, direct tx from the borrower)
+    3. PT-srUSDe   -> collateral  (CollateralVault.depositUnderlying, in an EVC batch)
+    4. borrow USDe                (CollateralVault.borrow, same EVC batch)
 
-All four are submitted as items of a single `EVC.batch(...)`. Because the EVC is
-`msg.sender` for the non-EVC-aware legs (Strata, Pendle), it transiently custodies the
-intermediate USDe -> srUSDe; Pendle delivers PT back to the borrower's EOA so the CV can
-pull it (CV ops pull collateral from `borrower`). Every downstream amount is derived from
-the first USDe deposit by a timestamp-pinned *discovery* pass on an anvil fork, so the
-static batch calldata is exact and no value leaks (srUSDe is yield-bearing — pinning
-block.timestamp freezes its exchange rate, making the discovery byte-identical to execution).
+Incident 95524: the EVC never custodies tokens and never receives an allowance. An EVC runs
+caller-chosen calls, so an allowance to it is an allowance to anyone. The non-EVC-aware legs
+(Strata, Pendle) are therefore direct txs: each pulls only from msg.sender = the borrower and
+pays the borrower. Only the CV legs go through `EVC.batch`; the CV authenticates the borrower
+through the EVC and pulls PT from the borrower. Approvals go to Strata, the Pendle router and
+the CV only (`_approve_cd` refuses any EVC via `twyne_cli.spender_guard`). The legs are not
+atomic: if a later leg fails, the borrower keeps the srUSDe / PT in their own wallet.
+
+Every downstream amount is derived from the first USDe deposit by a timestamp-pinned
+*discovery* pass on an anvil fork (srUSDe is yield-bearing — pinning block.timestamp freezes
+its exchange rate, so on a fork the execution is byte-identical to the discovery). Live, each
+leg re-reads the amount the previous leg really delivered.
 
 Modes
 -----
   --dry-run   (default)  Fork the chain, run the real batch on the fork, print the
                           before/after position and a zero-leak report. Nothing is broadcast.
-  --execute              Run approvals + broadcast the real EVC.batch. Against a controllable
+  --execute              Run approvals + broadcast the legs. Against a controllable
                           anvil fork (the test target) it impersonates the borrower and pins
                           the timestamp for exactness. Against a live chain it signs with
                           $PRIVATE_KEY (must equal the CV's borrower) and uses the Pendle
@@ -53,8 +58,8 @@ from eth_abi import encode as abi_encode  # noqa: E402
 from eth_utils import function_signature_to_4byte_selector as _sel4  # noqa: E402
 from eth_utils import to_checksum_address as cs  # noqa: E402
 
-from twyne_cli.simulate import AnvilFork  # noqa: E402
-from twyne_cli.vault_state import read_cv_state  # noqa: E402
+from twyne_cli.simulate import AnvilFork, read_cv_state  # noqa: E402
+from twyne_cli.spender_guard import assert_safe_spender  # noqa: E402
 
 # --- protocol math (CLAUDE.md §2.1 — never hand-roll) ----------------------------------
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "internal-twyne-docs", "FAQ-Knowledge-Base", "tools"))
@@ -83,11 +88,6 @@ BIG_APPROVE = 2**255
 WAD = 10**18
 DEFAULT_RPC = os.environ.get("RPC_URL_1") or "https://ethereum-rpc.publicnode.com"
 PENDLE_API = "https://api-v2.pendle.finance/core/v2/sdk/1/convert"
-# Live can't pin block.timestamp; srUSDe is yield-bearing so it mints marginally fewer shares
-# at inclusion than during discovery, and Pendle pulls an EXACT input. We shave the Pendle input
-# by this many bps so the swap can never come up short (leaves negligible srUSDe dust in the EVC).
-LIVE_SRUSDE_BUFFER_BPS = 1.0
-
 # Strata TrancheDepositor.deposit(vault, asset, amount, receiver, (swapDeadline, swapAmountOutMin, swapTokenOut, minShares))
 _STRATA_PARAMS_T = "(uint256,uint256,address,uint256)"
 _STRATA_DEPOSIT_SIG = f"deposit(address,address,uint256,address,{_STRATA_PARAMS_T})"
@@ -106,6 +106,8 @@ def cd(sig: str, types: list[str], args: list) -> str:
 
 
 def _approve_cd(spender: str, amount: int) -> str:
+    """approve() calldata. Refuses an EVC (or invalid) spender — incident 95524."""
+    assert_safe_spender(spender)
     return cd("approve(address,uint256)", ["address", "uint256"], [cs(spender), amount])
 
 
@@ -273,8 +275,7 @@ def ensure_fork_approvals(ch: Chain, cfg: CVConfig, start: int) -> None:
     """
     b = cfg.borrower
     for token, spender, amt in (
-        (cfg.usde, STRATA_DEPOSITOR, start),  # Strata pulls USDe (discovery + EVC item 3 approve)
-        (cfg.usde, EVC, start),  # batch item 1 transferFrom
+        (cfg.usde, STRATA_DEPOSITOR, start),  # Strata pulls USDe from the borrower
         (SRUSDE, PENDLE_ROUTER, BIG_APPROVE),  # Pendle pulls srUSDe
         (cfg.pt, cfg.cv, BIG_APPROVE),  # CV.depositUnderlying pulls PT
     ):
@@ -367,36 +368,77 @@ def _encode_batch(items: list[tuple[str, str, int, str]]) -> str:
     )
 
 
-def build_loop_items(cfg: CVConfig, plan: Plan, *, deposit_amt: int) -> list[tuple[str, str, int, str]]:
+def build_cv_items(cfg: CVConfig, deposit_amt: int, borrow_amt: int) -> list[tuple[str, str, int, str]]:
+    """EVC batch items: CV-only legs. The CV authenticates the borrower and pulls PT from them."""
     b = cfg.borrower
-    items = [
-        (
-            cfg.usde,
-            b,
-            0,
-            cd("transferFrom(address,address,uint256)", ["address", "address", "uint256"], [b, EVC, plan.start_usde]),
-        ),
-        (cfg.usde, b, 0, _approve_cd(STRATA_DEPOSITOR, plan.start_usde)),
-        (STRATA_DEPOSITOR, b, 0, _strata_deposit_cd(cfg, plan.start_usde, EVC)),
-        (SRUSDE, b, 0, _approve_cd(plan.pendle_to, plan.srusde_out)),
-        (plan.pendle_to, b, 0, plan.pendle_data),
-        (cfg.cv, b, 0, cd("depositUnderlying(uint256)", ["uint256"], [deposit_amt])),
-    ]
-    if plan.borrow_amt > 0:
-        items.append((cfg.cv, b, 0, cd("borrow(uint256,address)", ["uint256", "address"], [plan.borrow_amt, b])))
+    items = [(cfg.cv, b, 0, cd("depositUnderlying(uint256)", ["uint256"], [deposit_amt]))]
+    if borrow_amt > 0:
+        items.append((cfg.cv, b, 0, cd("borrow(uint256,address)", ["uint256", "address"], [borrow_amt, b])))
     return items
 
 
-def needed_approvals(ch: Chain, cfg: CVConfig, plan: Plan, *, deposit_amt: int, max_approve: bool) -> list[dict]:
-    """Pre-batch ERC20 approvals the borrower must really hold: USDe->EVC and PT->CV."""
-    out = []
-    for token, spender, amount, label in (
-        (cfg.usde, EVC, plan.start_usde, "USDe -> EVC (batch transferFrom)"),
-        (cfg.pt, cfg.cv, deposit_amt, "PT-srUSDe -> CV (depositUnderlying)"),
-    ):
-        if ch.erc20_allowance(token, cfg.borrower, spender) < amount:
-            out.append(dict(token=token, spender=spender, amount=(MAX_UINT if max_approve else amount), label=label))
-    return out
+class Sender:
+    """Sends the borrower's txs: impersonated on a fork (pinned to ts) or signed (live)."""
+
+    def __init__(self, ch: Chain, borrower: str, *, signer=None, ts: int | None = None, max_approve: bool = False):
+        self.ch, self.borrower, self.signer, self.ts, self.max_approve = ch, borrower, signer, ts, max_approve
+
+    def send(self, to: str, data: str, label: str) -> dict:
+        if self.signer is not None:
+            return _broadcast_signed(self.ch, self.signer, to, data, label=label, require_success=True)
+        rc = self.ch.send_impersonated(self.borrower, to, data, ts=self.ts)
+        if int(rc["status"], 16) != 1:
+            raise click.ClickException(f"{label} reverted on the fork")
+        return rc
+
+    def approve(self, token: str, spender: str, amount: int, label: str) -> None:
+        """Approve only if needed. `_approve_cd` refuses an EVC spender."""
+        if self.ch.erc20_allowance(token, self.borrower, spender) >= amount:
+            return
+        self.send(token, _approve_cd(spender, MAX_UINT if self.max_approve else amount), f"approve {label}")
+        if self.signer is not None:
+            _confirm_allowances(self.ch, self.borrower, [(token, spender, amount)])
+
+
+def execute_round(
+    sx: Sender, cfg: CVConfig, *, usde_in: int, slippage: float, borrow_for_pt, quote: tuple | None = None
+) -> dict:
+    """One loop round as three borrower txs: Strata deposit, Pendle swap, EVC batch [deposit, borrow].
+
+    `quote` = (srusde_in, pendle_to, pendle_data, min_pt) from discovery; it is reused only if the
+    Strata leg delivered exactly `srusde_in` (pinned fork), else Pendle is re-quoted for the real
+    amount. `borrow_for_pt(pt_got)` sizes the borrow from the PT really received.
+    """
+    ch, b = sx.ch, cfg.borrower
+    sx.approve(cfg.usde, STRATA_DEPOSITOR, usde_in, "USDe -> Strata depositor")
+    sr0 = ch.erc20_balance(SRUSDE, b)
+    sx.send(STRATA_DEPOSITOR, _strata_deposit_cd(cfg, usde_in, b), "Strata deposit")
+    sr_got = ch.erc20_balance(SRUSDE, b) - sr0
+    if sr_got <= 0:
+        raise click.ClickException("Strata deposit produced 0 srUSDe")
+
+    if quote is not None and quote[0] == sr_got:
+        _, pendle_to, pendle_data, min_pt = quote
+    else:
+        pendle_to, pendle_data, _pt_q, min_pt = _pendle_quote(sr_got, b, slippage)
+    sx.approve(SRUSDE, pendle_to, sr_got, "srUSDe -> Pendle router")
+    pt0 = ch.erc20_balance(PT_SRUSDE, b)
+    sx.send(pendle_to, pendle_data, "Pendle swap")
+    pt_got = ch.erc20_balance(PT_SRUSDE, b) - pt0
+    if pt_got < max(min_pt, 1):
+        raise click.ClickException(f"Pendle delivered {pt_got} PT < floor {min_pt}; PT stays in the borrower wallet")
+
+    borrow = borrow_for_pt(pt_got)
+    sx.approve(cfg.pt, cfg.cv, pt_got, "PT-srUSDe -> CV (depositUnderlying)")
+    batch = _encode_batch(build_cv_items(cfg, pt_got, borrow))
+    try:
+        if sx.ts is not None:
+            ch.set_next_ts(sx.ts)
+        ch.call(EVC, batch, frm=b)  # revert pre-check (msg.sender must be the borrower)
+    except Exception as e:
+        raise click.ClickException(f"EVC batch pre-check reverted (PT stays in the borrower wallet): {repr(e)[:240]}")
+    rc = sx.send(EVC, batch, "EVC batch (depositUnderlying + borrow)")
+    return dict(srusde_out=sr_got, pt_out=pt_got, borrow=borrow, rc=rc)
 
 
 # =======================================================================================
@@ -449,10 +491,6 @@ def run_on_fork(ch: Chain, cfg: CVConfig, *, start: int, slippage: float, target
     ch.rpc("anvil_setBalance", [b, hex(10**20)])
     before = read_cv_state(ch.rpc_url, HSV, cfg.cv, "latest")
 
-    # Show what real approvals the user would need, then force them on the fork.
-    real_apps = needed_approvals(
-        ch, cfg, Plan(start, 0, 0, 0, 0, PENDLE_ROUTER, "0x", ""), deposit_amt=start, max_approve=max_approve
-    )
     ensure_fork_approvals(ch, cfg, start)
 
     T = ch.latest_ts + 1  # single timestamp for discovery AND execution
@@ -460,24 +498,20 @@ def run_on_fork(ch: Chain, cfg: CVConfig, *, start: int, slippage: float, target
     deposit_amt = plan.pt_out  # pinned fork is deterministic -> exact, zero leftover
 
     print_plan(cfg, plan, deposit_amt=deposit_amt)
-    if real_apps:
-        click.echo("\n  Approvals the borrower must hold (auto-set on this fork):")
-        for a in real_apps:
-            click.echo(f"    - {a['label']}")
+    click.echo("\n  Approvals the borrower needs (auto-set on this fork): USDe -> Strata depositor, "
+               "srUSDe -> Pendle router, PT-srUSDe -> CV. Never the EVC.")
 
-    batch = _encode_batch(build_loop_items(cfg, plan, deposit_amt=deposit_amt))
     usde0 = ch.erc20_balance(cfg.usde, b)
-    ch.set_next_ts(T)
-    try:
-        ch.call(EVC, batch, frm=b)  # revert pre-check (msg.sender must be the borrower)
-    except Exception as e:
-        click.echo(f"\n  ✗ batch would revert: {repr(e)[:240]}")
-        raise click.ClickException("batch reverted in simulation")
-    rc = ch.send_impersonated(b, EVC, batch, ts=T)
+    sx = Sender(ch, b, ts=T, max_approve=max_approve)
+    res = execute_round(
+        sx, cfg, usde_in=start, slippage=slippage, borrow_for_pt=lambda _pt: plan.borrow_amt,
+        quote=(plan.srusde_out, plan.pendle_to, plan.pendle_data, plan.min_pt_out),
+    )
+    rc = res["rc"]
     after = read_cv_state(ch.rpc_url, HSV, cfg.cv, "latest")
 
     click.echo("\n── Result (fork) " + "─" * 48)
-    click.echo(f"  batch status: {'OK' if int(rc['status'], 16) else 'FAILED'}  gas={int(rc['gasUsed'], 16)}")
+    click.echo(f"  EVC batch status: {'OK' if int(rc['status'], 16) else 'FAILED'}  gas={int(rc['gasUsed'], 16)}")
     print_position("before", before)
     print_position("after", after)
     usde_delta = (ch.erc20_balance(cfg.usde, b) - usde0) / WAD
@@ -502,43 +536,23 @@ def run_live(
         T = fch.latest_ts + 1
         plan = discover_plan(fch, fcfg, start=start, T=T, slippage=slippage, **targets)
 
-    # Re-quote Pendle with a shaved srUSDe input (see LIVE_SRUSDE_BUFFER_BPS) so the swap can't
-    # come up short against the slightly-smaller srUSDe that mints at inclusion. Deposit the
-    # Pendle floor (min_pt) and scale the borrow to the actually-deposited collateral.
-    shave = max(int(plan.srusde_out * LIVE_SRUSDE_BUFFER_BPS / 10_000), 1)
-    srusde_in = plan.srusde_out - shave
-    pendle_to, pendle_data, pt_q, min_pt = _pendle_quote(srusde_in, cfg.borrower, slippage)
-    deposit_amt = min_pt
-    live_borrow = (plan.borrow_amt * deposit_amt // plan.pt_out) if plan.pt_out else plan.borrow_amt
-    live_plan = Plan(plan.start_usde, srusde_in, pt_q, min_pt, live_borrow, pendle_to, pendle_data, plan.target_desc)
-    print_plan(cfg, live_plan, deposit_amt=deposit_amt)
-    click.echo(f"  live drift buffer: {LIVE_SRUSDE_BUFFER_BPS:g} bps (~{shave / WAD:.9f} srUSDe left as EVC dust)")
-
-    apps = needed_approvals(ch, cfg, live_plan, deposit_amt=deposit_amt, max_approve=max_approve)
-    if apps:
-        click.echo("\n  Approvals required:")
-        for a in apps:
-            click.echo(f"    - {a['label']}")
-    if not yes and not click.confirm("\nSubmit approvals + EVC batch to the live chain?", default=False):
+    print_plan(cfg, plan, deposit_amt=plan.pt_out)
+    click.echo("  live: each leg is a separate tx; Pendle is re-quoted for the srUSDe really minted,")
+    click.echo("  and the borrow is scaled to the PT really received.")
+    if not yes and not click.confirm("\nSubmit approvals + the three legs to the live chain?", default=False):
         click.echo("Aborted.")
         return
 
     before = read_cv_state(ch.rpc_url, HSV, cfg.cv, "latest")
-    for a in apps:
-        _broadcast_signed(
-            ch, signer, a["token"], _approve_cd(a["spender"], a["amount"]), label=a["label"], require_success=True
-        )
-    _confirm_allowances(ch, cfg.borrower, [(cfg.usde, EVC, live_plan.start_usde), (cfg.pt, cfg.cv, deposit_amt)])
-
-    batch = _encode_batch(build_loop_items(cfg, live_plan, deposit_amt=deposit_amt))
-    try:
-        ch.call(EVC, batch, frm=cfg.borrower)  # decoded pre-check before spending gas
-    except Exception as e:
-        raise click.ClickException(f"batch pre-check reverted (nothing broadcast): {repr(e)[:240]}")
-    rc = _broadcast_signed(ch, signer, EVC, batch, label="EVC batch")
+    sx = Sender(ch, cfg.borrower, signer=signer, max_approve=max_approve)
+    res = execute_round(
+        sx, cfg, usde_in=start, slippage=slippage,
+        borrow_for_pt=lambda pt: (plan.borrow_amt * pt // plan.pt_out) if plan.pt_out else plan.borrow_amt,
+    )
+    rc = res["rc"]
     status = int(rc["status"], 16)
     click.echo(
-        f"\n  batch tx: {rc['transactionHash']}  status={'OK' if status else 'FAILED'}  gas={int(rc['gasUsed'], 16)}"
+        f"\n  EVC batch tx: {rc['transactionHash']}  status={'OK' if status else 'FAILED'}  gas={int(rc['gasUsed'], 16)}"
     )
     after = read_cv_state(ch.rpc_url, HSV, cfg.cv, "latest")
     print_position("before", before)
@@ -686,7 +700,7 @@ def main(
     max_approve,
     yes,
 ):
-    """Complete a PT-srUSDe <> USDe loop on Twyne in a single EVC batch."""
+    """Complete a PT-srUSDe <> USDe loop on Twyne (direct Strata + Pendle legs, CV legs in one EVC batch)."""
     if do_execute and dry_run:
         raise click.ClickException("--dry-run and --execute are mutually exclusive")
     if sum(x is not None for x in (target_hf, target_ltv, borrow_explicit)) > 1:
