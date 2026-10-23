@@ -1,6 +1,19 @@
 [
   {
     "type": "function",
+    "name": "UPGRADE_INTERFACE_VERSION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "string",
+        "internalType": "string"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "isBandFeasible",
     "inputs": [
       {
@@ -24,6 +37,40 @@
         "name": "",
         "type": "bool",
         "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "poolCaps",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetAsset",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "debtCap",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "collateralCap",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -63,6 +110,19 @@
         "name": "residualAfter",
         "type": "uint32",
         "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "proxiableUUID",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "stateMutability": "view"

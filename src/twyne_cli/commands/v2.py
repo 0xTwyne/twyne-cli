@@ -20,6 +20,20 @@ def _hf(v: float | None) -> str:
     return "N/A (no debt)" if v is None else f"{v:.4f}"
 
 
+def _cap(v: int | None) -> str:
+    return "N/A" if v is None else ("none" if v == 0 else str(v))
+
+
+def _ts(v: int | None) -> str:
+    return "N/A" if not v else str(v)
+
+
+def _due(le: dict) -> str:
+    if le["status"] == "waiting":
+        return f"{le['due_at']} ({le['seconds_left']} s left)"
+    return {"due": f"{le['due_at']} (due now)", "governance-only": "governance only"}.get(le["status"], le["status"])
+
+
 def _val(v: int | None) -> str:
     return "N/A (price unavailable)" if v is None else str(v)
 
@@ -66,6 +80,7 @@ def vault_cmd(ctx: TwyneContext, address: str):
         oracle = _router(iv, block)
         s = v2mod.vault_v2_state(vault, manager, iv, oracle, reader, block, _block_time(block))
         p = s["price_of_c"]
+        ss, ramp = s["self_settlement"], s["borrow_ramp"]
         _emit(
             ctx,
             s,
@@ -93,6 +108,12 @@ def vault_cmd(ctx: TwyneContext, address: str):
                 ("Price of C", p["status"]),
                 ("Price age / bound (s)", f"{p['age']} / {p['max_age']}"),
                 ("Risk-adding ops blocked", str(p["blocked_operations"])),
+                ("", ""),
+                ("Self-settlement mode", "N/A" if ss["name"] is None else f"{ss['mode']} ({ss['name']})"),
+                ("Settlement converter / tolerance", f"{ss['converter']} / {_bps(ss['converter_tolerance_bps'])}"
+                 if ss["mode"] == 2 else "N/A"),
+                ("Borrow ramp delta", "N/A" if ramp["delta_bps"] is None else (
+                    _bps(ramp["delta_bps"]) if ramp["enabled"] else "off (0)")),
             ],
             "Credit~Loan V2 Vault",
         )
@@ -123,6 +144,7 @@ def pool_cmd(ctx: TwyneContext, address: str):
         registry = None if reg_addr == ZERO else pooled_params_registry(reg_addr)
         s = v2mod.pool_state(pool, registry, block, _block_time(block))
         band, fb, px = s["excision_band"], s["fallback_record"], s["price_of_c"]
+        caps, le = s["caps"], s["loss_excision"]
         _emit(
             ctx,
             s,
@@ -149,6 +171,12 @@ def pool_cmd(ctx: TwyneContext, address: str):
                 ("Fallback finalized / scan open", f"{fb['finalized']} / {fb['scan_open']}"),
                 ("Fallback loss / repaid (raw)", f"{fb['loss_credit_raw']} / {fb['repaid_debt_raw']}"),
                 ("Pending splits", str(fb["pending_splits"])),
+                ("Loss excision (option)", le["option"]),
+                ("Fallback recorded at", _ts(le["recorded_at"])),
+                ("Loss excision due", _due(le)),
+                ("", ""),
+                ("Debt cap used / cap (raw)", f"{caps['debt_used_raw']} / {_cap(caps['debt_cap_raw'])}"),
+                ("Collateral cap used / cap (raw)", f"{caps['collateral_used_raw']} / {_cap(caps['collateral_cap_raw'])}"),
                 ("", ""),
                 ("Price of C available / fresh", f"{px['available']} / {px['fresh']}"),
                 ("Price of C age (s)", str(px["age"])),

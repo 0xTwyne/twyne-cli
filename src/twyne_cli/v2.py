@@ -21,6 +21,9 @@ NO_BOUND = "no-bound"  # the key has no normal bound (collateralPriceMaxAge == 0
 READER_MISSING = "reader-missing"  # a bound is set but no reader: the vault fails closed
 UNREADABLE = "unreadable"  # the reader reverted (unknown adapter type): the vault fails closed
 
+# VaultV2.selfSettlementMode(): how the borrower's own touches settle B_int
+SELF_SETTLEMENT_MODES = {0: "caller-supplied", 1: "receipt-token-deposit", 2: "converter"}
+
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
@@ -115,6 +118,15 @@ def vault_v2_state(vault, manager, iv, oracle, reader, block: int | None, now: i
         updated_at = _try(reader.priceUpdatedAt, block, router, asset, uoa)
         updated_at = None if updated_at is None else int(updated_at)
 
+    # Newer than the base the vault was built on: absent views read as None, not as an error
+    mode = _try(vault.selfSettlementMode, block) if hasattr(vault, "selfSettlementMode") else None
+    mode = None if mode is None else int(mode)
+    converter = tolerance = None
+    if mode == 2:
+        converter = _try(manager.settlementConverter, block, iv_addr, target_vault, target_asset)
+        tolerance = _opt_int(_try(manager.settlementConverterTolerance, block, iv_addr, target_vault, target_asset))
+    borrow_buffer = _opt_int(_try(manager.borrowBuffer, block, iv_addr, target_vault, target_asset))
+
     return {
         "vault": vault.address,
         "borrower": _call(vault.borrower, block),
@@ -139,7 +151,38 @@ def vault_v2_state(vault, manager, iv, oracle, reader, block: int | None, now: i
         "can_liquidate": can_liquidate,
         "externally_liquidated": externally_liquidated,
         "price_of_c": price_status(max_age, reader_addr, updated_at, now),
+        "self_settlement": {
+            "mode": mode,
+            "name": None if mode is None else SELF_SETTLEMENT_MODES.get(mode, "unknown"),
+            "converter": converter,
+            "converter_tolerance_bps": tolerance,
+        },
+        # Max-borrow ramp delta (1e4). 0 = no ramp. Risk-adding operations must end at or below
+        # the ramped borrow LTV; the vault checks it, this read shows only whether it is on.
+        "borrow_ramp": {
+            "delta_bps": borrow_buffer,
+            "enabled": None if borrow_buffer is None else borrow_buffer != 0,
+        },
     }
+
+
+def loss_excision_state(recorded_at, due_at, now: int) -> dict:
+    """Option A cut-off: from `due_at` anyone may call `exciseLoss`. Option B has no such view.
+
+    `due_at` 0 = no fallback record; 2**256-1 = only governance may excise (`residualAfter` = 0).
+    """
+    if recorded_at is None and due_at is None:
+        return {"option": "B", "recorded_at": None, "due_at": None, "status": "not-applicable", "seconds_left": None}
+    recorded_at, due_at = int(recorded_at or 0), int(due_at or 0)
+    if due_at == 0:
+        status, left = "no-record", None
+    elif due_at >= 2**255:
+        status, left = "governance-only", None
+    elif now >= due_at:
+        status, left = "due", 0
+    else:
+        status, left = "waiting", due_at - now
+    return {"option": "A", "recorded_at": recorded_at, "due_at": due_at, "status": status, "seconds_left": left}
 
 
 def pool_state(pool, registry, block: int | None, now: int) -> dict:
@@ -157,6 +200,12 @@ def pool_state(pool, registry, block: int | None, now: int) -> dict:
     if registry is not None:
         band_feasible = bool(_call(registry.isBandFeasible, block, iv, target_vault, target_asset))
     age = _try(pool.priceAge, block)
+    caps = _try(registry.poolCaps, block, iv, target_vault, target_asset) if registry is not None else None
+    c_tot = int(_call(pool.cTot, block))
+    b_ext_pool = int(_call(pool.extDebt, block))
+    debt_cap, coll_cap = (None, None) if caps is None else (int(caps[0]), int(caps[1]))
+    recorded_at = _try(pool.fallbackRecordedAt, block) if hasattr(pool, "fallbackRecordedAt") else None
+    due_at = _try(pool.lossExcisionDueAt, block) if hasattr(pool, "lossExcisionDueAt") else None
     return {
         "pool": pool.address,
         "intermediate_vault": iv,
@@ -166,11 +215,11 @@ def pool_state(pool, registry, block: int | None, now: int) -> dict:
         "loan_asset": target_asset,
         "residual_account": _call(pool.residualAccount, block),
         "open_accounts": int(_call(pool.openCount, block)),
-        "c_tot_raw": int(_call(pool.cTot, block)),
+        "c_tot_raw": c_tot,
         "c_lp_tot_raw": int(_call(pool.clpTot, block)),
         "posted_credit_raw": int(_call(pool.postedCredit, block)),
         "owed_credit_raw": int(_call(pool.owedCredit, block)),
-        "b_ext_pool_raw": int(_call(pool.extDebt, block)),
+        "b_ext_pool_raw": b_ext_pool,
         "iv_debt_raw": int(_call(pool.ivDebt, block)),
         "rate": int(_call(pool.rate, block)),
         "max_feasible_liq_ltv_t_bps": int(_call(pool.maxFeasibleLiqLTV, block)),
@@ -191,6 +240,16 @@ def pool_state(pool, registry, block: int | None, now: int) -> dict:
             "negative_total_raw": int(neg_tot),
             "pending_splits": int(_call(pool.pendingSplits, block)),
         },
+        # Per-pool size caps of the key (registry; 0 = no cap). None: the registry has no poolCaps.
+        "caps": {
+            "debt_cap_raw": debt_cap,
+            "collateral_cap_raw": coll_cap,
+            "debt_used_raw": b_ext_pool,
+            "collateral_used_raw": c_tot,
+            "debt_cap_reached": None if debt_cap is None else debt_cap != 0 and b_ext_pool >= debt_cap,
+            "collateral_cap_reached": None if coll_cap is None else coll_cap != 0 and c_tot >= coll_cap,
+        },
+        "loss_excision": loss_excision_state(recorded_at, due_at, now),
         "price_of_c": {
             "available": bool(price_ok),
             "bid": int(p_c),

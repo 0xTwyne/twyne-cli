@@ -78,12 +78,12 @@ Adding a new chain:
 
 ### `twyne v2` — Credit~Loan V2 and Pooled Long-Tail Vaults (read-only)
 
-No V2 contract is deployed yet, so the bundled address registries carry no V2 entry. Every command takes the vault or pool address and reads the manager, intermediate vault, price reader, registry and residual account from it. ABIs are view-only subsets in `src/twyne_cli/abis/` (regenerate with `scripts/sync_v2_abis.py <twyne-contracts worktree>`). Values (`C`, `B_total`) are in the intermediate vault's unit of account (C at bid, liabilities at ask). Global flags go before the subcommand: `twyne --json --block N v2 vault <addr>`.
+No V2 contract is deployed yet, so the bundled address registries carry no V2 entry. Every command takes the vault or pool address and reads the manager, intermediate vault, price reader, registry and residual account from it. ABIs are view-only subsets in `src/twyne_cli/abis/` (regenerate with `scripts/sync_v2_abis.py <base build> <pooled build A> [<pooled build B>]`; the pooled ABI is the union of the options). Values (`C`, `B_total`) are in the intermediate vault's unit of account (C at bid, liabilities at ask). Global flags go before the subcommand: `twyne --json --block N v2 vault <addr>`.
 
 | Command | Arguments | Purpose |
 |---------|-----------|---------|
-| `vault` | `<address>` | C, B_ext, B_int, B_total, C_LP, liqLTV_t, health (liqLTV_t / LTV_t), max feasible liqLTV_t, `canLiquidate`, price-of-C staleness (`fresh`/`stale`/`no-bound`/`reader-missing`/`unreadable`; the last two fail closed like the vault) |
-| `pool` | `<address>` | Pooled totals, excision band (`delta_x`, `d_max`, growth bound g^max, band feasibility), open fallback record, pending splits, residual account address, price of C |
+| `vault` | `<address>` | C, B_ext, B_int, B_total, C_LP, liqLTV_t, health (liqLTV_t / LTV_t), max feasible liqLTV_t, `canLiquidate`, price-of-C staleness (`fresh`/`stale`/`no-bound`/`reader-missing`/`unreadable`; the last two fail closed like the vault), self-settlement mode (0 caller-supplied, 1 receipt-token deposit, 2 converter plus its address and tolerance) and the borrow-ramp delta (`borrowBuffer`; 0 = off). Views a vault build lacks read as `null` |
+| `pool` | `<address>` | Pooled totals, excision band (`delta_x`, `d_max`, growth bound g^max, band feasibility), open fallback record, pending splits, residual account address, price of C, per-key pool caps (debt and collateral, 0 = none, with usage), and the Option A loss-excision due time (`fallbackRecordedAt`, `lossExcisionDueAt`: `no-record`/`waiting`/`due`/`governance-only`; `not-applicable` on Option B, which has no such views) |
 | `account` | `<pool> <borrower>` | One pooled account: C, B_ext, B_int, C_LP, LTV, health, excess credit, split pending, excisable. Price-dependent fields are `null` beyond the liquidation bound |
 | `residual` | `<pool>` | Residual account R: unsold C held and intermediate-vault debt it owes |
 

@@ -30,6 +30,35 @@
   },
   {
     "type": "function",
+    "name": "borrowBuffer",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetAsset",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "delta",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "collateralPriceMaxAge",
     "inputs": [
       {
@@ -129,6 +158,64 @@
         "name": "rebalanceFee",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "settlementConverter",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetAsset",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "converter",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "settlementConverterTolerance",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetAsset",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "tolerance",
+        "type": "uint16",
+        "internalType": "uint16"
       }
     ],
     "stateMutability": "view"

@@ -36,14 +36,21 @@ def make_vault(**over):
         asset=ASSET, targetVault=TARGET, targetAsset=LOAN, reserve=CREDIT, intermediateVault=IV,
         totalAssets=1_000, totalReserved=300, maxRepay=500, maxRelease=340, twyneLiqLTV=8_000,
         maxFeasibleLiqLTV=9_000, canLiquidate=False, isExternallyLiquidated=False, borrower=BORROWER,
+        selfSettlementMode=0,
     )
     vals.update(over)
     return SimpleNamespace(address=VAULT, **{k: fn(v) for k, v in vals.items()})
 
 
-def make_world(vault=None, max_age=3_600, fee=500, quotes=None):
+CONVERTER = "0x00000000000000000000000000000000000000C9"
+
+
+def make_world(vault=None, max_age=3_600, fee=500, quotes=None, buffer=0):
     vault = vault or make_vault()
-    manager = SimpleNamespace(rebalanceFee=fn(fee), collateralPriceMaxAge=fn(max_age))
+    manager = SimpleNamespace(
+        rebalanceFee=fn(fee), collateralPriceMaxAge=fn(max_age), borrowBuffer=fn(buffer),
+        settlementConverter=fn(CONVERTER), settlementConverterTolerance=fn(50),
+    )
     iv = SimpleNamespace(unitOfAccount=fn(UOA), oracle=fn("0xROUTER"))
     # unit of account value = amount * 2 (bid) / amount * 2 (ask): price 2 for every asset
     oracle = SimpleNamespace(getQuotes=MagicMock(side_effect=quotes or (lambda amt, b, q, **kw: (amt * 2, amt * 2))))
@@ -130,6 +137,35 @@ def test_vault_state_passes_block_to_every_call():
     assert all(c.kwargs == {"block_identifier": 123} for c in oracle.getQuotes.call_args_list)
 
 
+def test_self_settlement_modes():
+    for mode, name in ((0, "caller-supplied"), (1, "receipt-token-deposit"), (2, "converter")):
+        vault, manager, iv, oracle, reader = make_world(make_vault(selfSettlementMode=mode))
+        ss = v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["self_settlement"]
+        assert (ss["mode"], ss["name"]) == (mode, name)
+        # the converter is read only in mode 2
+        assert (ss["converter"], ss["converter_tolerance_bps"]) == ((CONVERTER, 50) if mode == 2 else (None, None))
+
+
+def test_self_settlement_absent_on_older_vault_is_null():
+    vault, manager, iv, oracle, reader = make_world()
+    vault.selfSettlementMode = fn(side_effect=RuntimeError("no such selector"))
+    ss = v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["self_settlement"]
+    assert ss["mode"] is None and ss["name"] is None
+    del vault.selfSettlementMode  # ABI without the view at all
+    assert v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["self_settlement"]["mode"] is None
+
+
+def test_borrow_ramp_state():
+    vault, manager, iv, oracle, reader = make_world(buffer=250)
+    r = v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["borrow_ramp"]
+    assert r == {"delta_bps": 250, "enabled": True}
+    vault, manager, iv, oracle, reader = make_world(buffer=0)
+    assert v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["borrow_ramp"]["enabled"] is False
+    manager.borrowBuffer = fn(side_effect=RuntimeError("old manager"))
+    r = v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["borrow_ramp"]
+    assert r == {"delta_bps": None, "enabled": None}
+
+
 # --------------------------------------------------------------------------- #
 # pooled vault
 # --------------------------------------------------------------------------- #
@@ -149,7 +185,7 @@ def make_pool(delta_x=300, **over):
 
 
 def test_pool_state_band_fallback_and_splits():
-    registry = SimpleNamespace(isBandFeasible=fn(True))
+    registry = SimpleNamespace(isBandFeasible=fn(True), poolCaps=fn((1_000, 0)))
     s = v2.pool_state(make_pool(), registry, None, now=0)
     assert s["excision_band"] == {
         "delta_x_bps": 300, "d_max_bps": 200, "enabled": True, "growth_bound_bps": 10_500, "band_feasible": True,
@@ -158,6 +194,42 @@ def test_pool_state_band_fallback_and_splits():
     assert fb["open"] and not fb["finalized"] and fb["loss_credit_raw"] == 50 and fb["pending_splits"] == 2
     assert s["open_accounts"] == 3 and s["owed_credit_raw"] == 400 and s["posted_credit_raw"] == 380
     registry.isBandFeasible.assert_called_once_with(IV, TARGET, LOAN)
+
+
+def test_pool_caps_zero_means_no_cap_and_reached_flags():
+    pool = make_pool(cTot=900, extDebt=700)
+    registry = SimpleNamespace(isBandFeasible=fn(True), poolCaps=fn((700, 0)))
+    caps = v2.pool_state(pool, registry, None, 0)["caps"]
+    assert caps["debt_cap_reached"] is True and caps["collateral_cap_reached"] is False
+    assert (caps["debt_used_raw"], caps["collateral_used_raw"]) == (700, 900)
+    registry.poolCaps = fn((701, 900))
+    caps = v2.pool_state(pool, registry, None, 0)["caps"]
+    assert caps["debt_cap_reached"] is False and caps["collateral_cap_reached"] is True
+    registry.poolCaps = fn(side_effect=RuntimeError("old registry"))
+    assert v2.pool_state(pool, registry, None, 0)["caps"]["debt_cap_reached"] is None
+
+
+def test_loss_excision_option_a_states():
+    f = v2.loss_excision_state
+    assert f(0, 0, 100)["status"] == "no-record"
+    assert f(50, 2**256 - 1, 100)["status"] == "governance-only"
+    waiting = f(50, 150, 100)
+    assert waiting["status"] == "waiting" and waiting["seconds_left"] == 50 and waiting["option"] == "A"
+    assert f(50, 100, 100)["status"] == "due" and f(50, 90, 100)["seconds_left"] == 0
+
+
+def test_loss_excision_option_b_has_no_views():
+    pool = make_pool()
+    pool.fallbackRecordedAt = fn(side_effect=RuntimeError("no selector"))
+    pool.lossExcisionDueAt = fn(side_effect=RuntimeError("no selector"))
+    le = v2.pool_state(pool, None, None, 0)["loss_excision"]
+    assert le["option"] == "B" and le["status"] == "not-applicable"
+
+
+def test_pool_state_option_a_reads_due_time():
+    pool = make_pool(fallbackRecordedAt=1_000, lossExcisionDueAt=1_600)
+    le = v2.pool_state(pool, None, None, now=1_100)["loss_excision"]
+    assert (le["option"], le["status"], le["seconds_left"], le["recorded_at"]) == ("A", "waiting", 500, 1_000)
 
 
 def test_pool_state_excision_disabled_and_no_registry():
@@ -235,13 +307,15 @@ def test_residual_state():
 # --------------------------------------------------------------------------- #
 
 V2_NAMES = {
-    "CollateralVaultV2": {"totalAssets", "totalReserved", "maxRepay", "maxRelease", "twyneLiqLTV", "maxFeasibleLiqLTV",
+    "CollateralVaultV2": {"selfSettlementMode", "totalAssets", "totalReserved", "maxRepay", "maxRelease", "twyneLiqLTV", "maxFeasibleLiqLTV",
                           "canLiquidate", "internalDebtToSettle", "intermediateVault", "twyneVaultManager"},
     "PooledLongTailVault": {"accounts", "fallbackState", "pendingSplits", "pooledParams", "excisionGrowthBound",
-                            "residualAccount", "isExcisable", "priceAge", "attributedLoss", "totalDebtOf"},
+                            "residualAccount", "isExcisable", "priceAge", "attributedLoss", "totalDebtOf",
+                            "fallbackRecordedAt", "lossExcisionDueAt"},
     "PooledResidualAccount": {"totalAssets", "asset", "pool"},
-    "PooledParamsRegistry": {"isBandFeasible", "pooledParams"},
-    "VaultManagerV2": {"rebalanceFee", "collateralPriceMaxAge", "priceFreshnessReader", "boost", "liqParams"},
+    "PooledParamsRegistry": {"isBandFeasible", "pooledParams", "poolCaps"},
+    "VaultManagerV2": {"rebalanceFee", "collateralPriceMaxAge", "priceFreshnessReader", "boost", "liqParams",
+                       "borrowBuffer", "settlementConverter", "settlementConverterTolerance"},
     "PriceFreshnessReader": {"priceUpdatedAt"},
 }
 
