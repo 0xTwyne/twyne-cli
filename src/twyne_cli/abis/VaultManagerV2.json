@@ -1,0 +1,136 @@
+[
+  {
+    "type": "function",
+    "name": "boost",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetAsset",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "boost",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "collateralPriceMaxAge",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetAsset",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "maxAge",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "liqParams",
+    "inputs": [
+      {
+        "name": "_intermediateVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_targetVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_targetAsset",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "priceFreshnessReader",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "rebalanceFee",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetAsset",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "rebalanceFee",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  }
+]

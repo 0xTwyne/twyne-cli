@@ -1,0 +1,83 @@
+[
+  {
+    "type": "function",
+    "name": "isBandFeasible",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetAsset",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pooledParams",
+    "inputs": [
+      {
+        "name": "intermediateVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetVault",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "targetAsset",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "deltaX",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "dMax",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "residualAfter",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "vaultManager",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract VaultManagerV2"
+      }
+    ],
+    "stateMutability": "view"
+  }
+]

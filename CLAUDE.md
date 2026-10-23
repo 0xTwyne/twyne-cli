@@ -76,6 +76,17 @@ Adding a new chain:
 | `info` | `<address>` | Full vault state: collateral, credit, debt, LTV, health |
 | `list` | (none) | List all created collateral vaults (incremental cache) |
 
+### `twyne v2` — Credit~Loan V2 and Pooled Long-Tail Vaults (read-only)
+
+No V2 contract is deployed yet, so the bundled address registries carry no V2 entry. Every command takes the vault or pool address and reads the manager, intermediate vault, price reader, registry and residual account from it. ABIs are view-only subsets in `src/twyne_cli/abis/` (regenerate with `scripts/sync_v2_abis.py <twyne-contracts worktree>`). Values (`C`, `B_total`) are in the intermediate vault's unit of account (C at bid, liabilities at ask). Global flags go before the subcommand: `twyne --json --block N v2 vault <addr>`.
+
+| Command | Arguments | Purpose |
+|---------|-----------|---------|
+| `vault` | `<address>` | C, B_ext, B_int, B_total, C_LP, liqLTV_t, health (liqLTV_t / LTV_t), max feasible liqLTV_t, `canLiquidate`, price-of-C staleness (`fresh`/`stale`/`no-bound`/`reader-missing`/`unreadable`; the last two fail closed like the vault) |
+| `pool` | `<address>` | Pooled totals, excision band (`delta_x`, `d_max`, growth bound g^max, band feasibility), open fallback record, pending splits, residual account address, price of C |
+| `account` | `<pool> <borrower>` | One pooled account: C, B_ext, B_int, C_LP, LTV, health, excess credit, split pending, excisable. Price-dependent fields are `null` beyond the liquidation bound |
+| `residual` | `<pool>` | Residual account R: unsold C held and intermediate-vault debt it owes |
+
 ### `twyne protocol` — Protocol-Level Queries
 
 | Command | Arguments | Purpose |
