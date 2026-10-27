@@ -8,7 +8,9 @@ vault's unit of account (C at the bid, liabilities at the ask), as the vault val
 There is one liquidation trigger (`canLiquidate`): B_tot > dyn_liqLTV_t * C, with
 dyn_liqLTV_t = min(liqLTV_t*, cap / C) and liqLTV_t* = min(liqLTV_t, max_liqLTV_t). A per-vault build
 exposes neither `cap` nor dyn_liqLTV_t nor the reservation floor and target (integration-specific
-internals); those come from the periphery lens (`TODO(lens)`). A pooled vault exposes them per account.
+internals); those come from the periphery lens (`CreditLoanV2Lens.vaultState`), together with the exact
+loan-unit B_tot, `liquidatable` and the third-party settlement state. Without a lens the read labels
+its values `source: "estimate"` and leaves those fields `None`. A pooled vault exposes them per account.
 
 Each function takes already-built contract objects so the tests need no RPC.
 """
@@ -28,6 +30,11 @@ SELF_SETTLEMENT_MODES = {0: "caller-supplied", 1: "receipt-token-deposit", 2: "c
 
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
+# CreditLoanV2Lens.Settlement: what a third party's settleInternalDebt can do now
+SETTLEMENT_STATES = ("None", "Open", "Unhealthy", "WaitsForBorrower", "Halted", "PriceUnusable", "SplitPending")
+
+WAD = 10**18
+
 
 def _call(fn, block: int | None, *args):
     return fn(*args, block_identifier=block) if block is not None else fn(*args)
@@ -41,12 +48,24 @@ def _try(fn, block: int | None, *args) -> Any | None:
         return None
 
 
-def vault_v2_state(vault, manager, iv, oracle, block: int | None) -> dict:
+def _field(struct, name: str):
+    """A field of a lens struct: attribute access (ape Struct, namedtuple) or mapping access."""
+    try:
+        return getattr(struct, name)
+    except AttributeError:
+        return struct[name]
+
+
+def vault_v2_state(vault, manager, iv, oracle, block: int | None, lens=None) -> dict:
     """State of one V2 collateral vault.
 
     `vault`, `manager`, `iv` (intermediate vault, EVault ABI) and `oracle` (its router) are contract
-    objects. `can_liquidate` is the vault's own single trigger; the health factor is measured against
-    liqLTV_t*, which is an upper bound of dyn_liqLTV_t, so it never reads lower than the trigger does.
+    objects. `lens` is the periphery CreditLoanV2Lens (or Aave lens) serving the vault, or None.
+    `can_liquidate` is the vault's own single trigger. With a lens, dyn_liqLTV_t, the reservation, the
+    exact B_tot, `liquidatable` and the settlement state are the lens's (`source` = "lens") and the
+    health factor is dyn_liqLTV_t / LTV_t. Without one (or when the lens call reverts) they are
+    estimates or None (`source` = "estimate") and the health factor is measured against liqLTV_t*,
+    an upper bound of dyn_liqLTV_t, so it never reads lower than the trigger does.
     """
     asset = _call(vault.asset, block)
     target_vault = _call(vault.targetVault, block)
@@ -77,8 +96,8 @@ def vault_v2_state(vault, manager, iv, oracle, block: int | None) -> dict:
     c_value = quote(c, asset, 0)  # bid
     b_ext_value = quote(b_ext, target_asset, 1)  # ask
     b_int_value = quote(b_int, reserve, 1)
-    # Estimate: the vault sums B_int in loan units, adds one unit and quotes once at the ask
-    # (TODO(lens): the exact B_tot). The trigger itself is `can_liquidate`.
+    # Estimate: the vault sums B_int in loan units, adds one unit and quotes once at the ask;
+    # the lens reports the exact B_tot (overrides below). The trigger itself is `can_liquidate`.
     b_total_value = None
     health = None
     operating_ltv_bps = None
@@ -94,12 +113,54 @@ def vault_v2_state(vault, manager, iv, oracle, block: int | None) -> dict:
             operating_ltv_bps = None
             health = 0.0
 
+    ls = _try(lens.vaultState, block, vault.address) if lens is not None else None
+    lens_view = None
+    health_basis = "liq_ltv_t_star"
+    dyn_bps = None
+    if ls is not None:
+        usable = bool(_field(ls, "priceUsable"))
+        lam = int(_field(ls, "lam"))
+        liq_ltv_star = lam
+        res = _field(ls, "reservation")
+        # The lens zeroes the values that need a price of C when the router refuses it: report None instead
+        lens_view = {
+            "price_usable": usable,
+            "liquidatable": bool(_field(ls, "liquidatable")),
+            "settlement": SETTLEMENT_STATES[int(_field(ls, "settlement"))],
+            "iv_limit_reached": bool(_field(ls, "ivLimitReached")),
+            "settlement_borrow_raw": int(_field(ls, "settlementBorrow")),
+            "capacity_value": int(_field(ls, "capacity")) if usable else None,
+            "capacity_binds": bool(_field(ls, "capacityBinds")) if usable else None,
+            "borrow_limit_value": int(_field(ls, "borrowLimitValue")) if usable else None,
+            "ramp_excess_value": int(_field(ls, "rampExcess")) if usable else None,
+            "reservation": {
+                "floor_raw": int(_field(res, "floor")) if usable else None,
+                "target_raw": int(_field(res, "target")) if usable else None,
+                "cash_cap_raw": int(_field(res, "cashCap")) if usable else None,
+                "rule_target_raw": int(_field(res, "ruleTarget")) if usable else None,
+            },
+        }
+        if usable:
+            dyn_bps = int(_field(ls, "dynLiqLTV"))
+            b_total_value = int(_field(ls, "totalDebtValue"))
+            c_value = int(_field(ls, "collateralValue"))
+            if b_total_value == 0:
+                health, operating_ltv_bps = None, 0
+            else:
+                operating_ltv_bps = int(_field(ls, "ltv"))
+                health = int(_field(ls, "healthFactor")) / WAD  # dyn_liqLTV_t / LTV_t
+            health_basis = "dyn_liq_ltv_t"
+        else:
+            b_total_value = operating_ltv_bps = health = None
+
     # Fresh price or revert: the router must quote C now (mirrors CreditLoanV2Checks.collateralPriceUsable)
     fresh = _try(oracle.getQuotes, block, c or 1, asset, uoa) is not None
 
     # Cap of a reservation (CreditLoanV2Checks.reservationRule): IV cash plus the credit held against the IV debt
     cash = _opt_int(_try(iv.cash, block))
     cash_cap = None if cash is None else cash + min(c_lp, iv_debt)
+    if lens_view is not None and lens_view["reservation"]["cash_cap_raw"] is not None:
+        cash_cap = lens_view["reservation"]["cash_cap_raw"]
 
     # Newer than the base the vault was built on: absent views read as None, not as an error
     mode = _try(vault.selfSettlementMode, block) if hasattr(vault, "selfSettlementMode") else None
@@ -112,6 +173,9 @@ def vault_v2_state(vault, manager, iv, oracle, block: int | None) -> dict:
     fee_cap = _opt_int(_try(manager.MAX_REBALANCE_FEE, block)) if hasattr(manager, "MAX_REBALANCE_FEE") else None
 
     return {
+        "source": "lens" if lens_view is not None else "estimate",
+        "lens": None if lens_view is None else lens.address,
+        "lens_view": lens_view,
         "vault": vault.address,
         "borrower": _call(vault.borrower, block),
         "collateral_asset": asset,
@@ -132,10 +196,12 @@ def vault_v2_state(vault, manager, iv, oracle, block: int | None) -> dict:
         "liq_ltv_t_bps": liq_ltv,
         "max_liq_ltv_t_bps": max_liq_ltv,
         "liq_ltv_t_star_bps": liq_ltv_star,
-        "dyn_liq_ltv_t_bps": None,  # TODO(lens): min(liqLTV_t*, cap / C); `cap` is not a vault view
+        # min(liqLTV_t*, cap / C): `cap` is not a vault view, so only the lens reports it
+        "dyn_liq_ltv_t_bps": dyn_bps,
         "max_feasible_liq_ltv_t_bps": max_feasible,
         "operating_ltv_t_bps": operating_ltv_bps,
         "health_factor_t": health,
+        "health_basis": health_basis,
         "can_liquidate": can_liquidate,
         "externally_liquidated": externally_liquidated,
         "price_of_c": {
@@ -144,11 +210,13 @@ def vault_v2_state(vault, manager, iv, oracle, block: int | None) -> dict:
             "blocked_operations": not fresh,
         },
         # Reservation of the borrower's own touch: max(floor, min(target, cash cap)). The floor (for B_ext)
-        # and the target (capacity at liqLTV_t* * C) are integration-specific internals of the vault.
+        # and the target (capacity at liqLTV_t* * C) are integration-specific internals of the vault:
+        # the lens reports them (None without a lens or without a price of C).
         "reservation": {
             "current_raw": c_lp,
-            "floor_raw": None,  # TODO(lens)
-            "target_raw": None,  # TODO(lens)
+            "floor_raw": None if lens_view is None else lens_view["reservation"]["floor_raw"],
+            "target_raw": None if lens_view is None else lens_view["reservation"]["target_raw"],
+            "rule_target_raw": None if lens_view is None else lens_view["reservation"]["rule_target_raw"],
             "cash_cap_raw": cash_cap,
         },
         "self_settlement": {

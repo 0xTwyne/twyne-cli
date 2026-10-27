@@ -84,13 +84,86 @@ def test_liq_ltv_star_is_capped_by_max_liq_ltv():
     manager.liqParams.assert_called_once_with(IV, TARGET, LOAN)
 
 
-def test_vault_dyn_liq_ltv_and_reservation_internals_need_the_lens():
+def lens_state(**over):
+    reservation = dict(floor=450, target=800, cashCap=1_300, ruleTarget=800)
+    reservation.update(over.pop("reservation", {}))
+    vals = dict(
+        priceUsable=True, lam=8_000, capacity=900, dynLiqLTV=4_500, capacityBinds=True, liquidatable=False,
+        settlement=1, ivLimitReached=False, settlementBorrow=21, collateralValue=2_000, totalDebtValue=1_085,
+        ltv=5_425, healthFactor=829_493_087_557_603_686, borrowLimitValue=900, rampExcess=185,
+        reservation=SimpleNamespace(**reservation),
+    )
+    vals.update(over)
+    return SimpleNamespace(**vals)
+
+
+def make_lens(state=None, side_effect=None):
+    return SimpleNamespace(address="0x00000000000000000000000000000000000000L1",
+                           vaultState=fn(state or lens_state(), side_effect=side_effect))
+
+
+def test_vault_without_a_lens_is_an_estimate_with_no_capacity_or_reservation_internals():
     vault, manager, iv, oracle = make_world()
     s = v2.vault_v2_state(vault, manager, iv, oracle, None)
-    assert s["dyn_liq_ltv_t_bps"] is None  # TODO(lens)
-    assert s["reservation"]["floor_raw"] is None and s["reservation"]["target_raw"] is None  # TODO(lens)
+    assert s["source"] == "estimate" and s["lens"] is None and s["lens_view"] is None
+    assert s["dyn_liq_ltv_t_bps"] is None
+    assert s["reservation"]["floor_raw"] is None and s["reservation"]["target_raw"] is None
+    assert s["health_basis"] == "liq_ltv_t_star"
     assert s["can_liquidate"] is False  # the vault's own trigger is read, never re-derived
     assert "external_health_factor" not in s
+
+
+def test_vault_with_a_lens_reports_dyn_ltv_reservation_exact_b_total_and_settlement():
+    vault, manager, iv, oracle = make_world()
+    lens = make_lens()
+    s = v2.vault_v2_state(vault, manager, iv, oracle, None, lens)
+    lens.vaultState.assert_called_once_with(VAULT)
+    assert s["source"] == "lens" and s["lens"] == lens.address
+    assert s["dyn_liq_ltv_t_bps"] == 4_500
+    # the exact loan-unit B_tot replaces the estimate (1084)
+    assert s["b_total_value"] == 1_085 and s["operating_ltv_t_bps"] == 5_425
+    assert s["health_basis"] == "dyn_liq_ltv_t" and s["health_factor_t"] == pytest.approx(0.8294930875576037)
+    assert s["reservation"] == {
+        "current_raw": 300, "floor_raw": 450, "target_raw": 800, "rule_target_raw": 800, "cash_cap_raw": 1_300,
+    }
+    lv = s["lens_view"]
+    assert (lv["liquidatable"], lv["settlement"], lv["iv_limit_reached"]) == (False, "Open", False)
+    assert (lv["capacity_value"], lv["capacity_binds"], lv["borrow_limit_value"], lv["ramp_excess_value"]) == (900, True, 900, 185)
+    assert s["can_liquidate"] is False  # still the vault's own answer
+
+
+def test_vault_lens_settlement_states_and_liquidatable():
+    vault, manager, iv, oracle = make_world()
+    lens = make_lens(lens_state(liquidatable=True, settlement=2, ivLimitReached=True))
+    lv = v2.vault_v2_state(vault, manager, iv, oracle, None, lens)["lens_view"]
+    assert (lv["liquidatable"], lv["settlement"], lv["iv_limit_reached"]) == (True, "Unhealthy", True)
+    assert v2.SETTLEMENT_STATES[3] == "WaitsForBorrower" and v2.SETTLEMENT_STATES[5] == "PriceUnusable"
+
+
+def test_vault_lens_without_a_price_reports_none_not_zero():
+    vault, manager, iv, oracle = make_world()
+    lens = make_lens(lens_state(priceUsable=False, settlement=5, dynLiqLTV=0, totalDebtValue=0, capacity=0,
+                                reservation=dict(floor=0, target=0, cashCap=0, ruleTarget=0)))
+    s = v2.vault_v2_state(vault, manager, iv, oracle, None, lens)
+    assert s["dyn_liq_ltv_t_bps"] is None and s["b_total_value"] is None and s["health_factor_t"] is None
+    assert s["reservation"]["floor_raw"] is None and s["reservation"]["target_raw"] is None
+    assert s["reservation"]["cash_cap_raw"] == 1_300  # the exact read stays
+    assert s["lens_view"]["settlement"] == "PriceUnusable" and s["lens_view"]["capacity_value"] is None
+
+
+def test_vault_lens_that_reverts_falls_back_to_the_estimate():
+    vault, manager, iv, oracle = make_world()
+    s = v2.vault_v2_state(vault, manager, iv, oracle, None, make_lens(side_effect=RuntimeError("UnsupportedKind")))
+    assert s["source"] == "estimate" and s["lens_view"] is None
+    assert s["b_total_value"] == 1_084 and s["dyn_liq_ltv_t_bps"] is None
+
+
+def test_lens_abi_has_the_rebuilt_vault_state():
+    abi = {e["name"]: e for e in _load_abi("CreditLoanV2Lens")}
+    assert set(abi) == {"kindOf", "previewExternalLiquidation", "vaultState", "vaultStates"}
+    fields = {c["name"] for c in abi["vaultState"]["outputs"][0]["components"]}
+    assert {"liquidatable", "settlement", "reservation", "dynLiqLTV", "capacity", "capacityBinds", "ivLimitReached"} <= fields
+    assert not fields & {"effectiveLiqLTV", "internalDebtValue", "liquidationDebtValue", "price"}
 
 
 def test_vault_reservation_cash_cap_is_cash_plus_credit_held_against_iv_debt():
@@ -430,7 +503,40 @@ def test_vault_command_json_output_at_block(monkeypatch):
     data = json.loads(result.output)
     assert data["b_total_value"] == 1_084 and data["price_of_c"]["status"] == "fresh"
     assert data["dyn_liq_ltv_t_bps"] is None and data["liq_ltv_t_star_bps"] == 8_000
+    assert data["source"] == "estimate"
     vault.twyneVaultManager.assert_called_with(block_identifier=42)
+
+
+def test_vault_command_with_lens_option(monkeypatch):
+    vault, manager, iv, oracle = make_world()
+    lens = make_lens()
+    monkeypatch.setattr("twyne_cli.contracts.collateral_vault_v2", lambda a: vault)
+    monkeypatch.setattr("twyne_cli.contracts.vault_manager_v2", lambda a: manager)
+    monkeypatch.setattr("twyne_cli.contracts.credit_vault", lambda a: iv)
+    monkeypatch.setattr("twyne_cli.contracts.oracle_router_at", lambda a: oracle)
+    monkeypatch.setattr("twyne_cli.contracts.credit_loan_v2_lens", lambda a: lens)
+    vault.twyneVaultManager = fn("0x00000000000000000000000000000000000000M1")
+    monkeypatch.setattr("twyne_cli.context.TwyneContext.connect", lambda self: MagicMock())
+    monkeypatch.setattr("twyne_cli.context.TwyneContext.disconnect", lambda self: None)
+
+    result = CliRunner().invoke(cli, ["--json", "v2", "vault", VAULT, "--lens", lens.address])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["source"] == "lens" and data["dyn_liq_ltv_t_bps"] == 4_500
+    assert data["reservation"]["floor_raw"] == 450 and data["lens_view"]["settlement"] == "Open"
+    # the table form builds every row, lens or not
+    from twyne_cli.commands import v2 as cmd
+
+    monkeypatch.setattr(cmd, "is_tty", lambda: True)
+    rows = []
+    monkeypatch.setattr(cmd, "output_kv", lambda r, title=None: rows.extend(r))
+    assert CliRunner().invoke(cli, ["v2", "vault", VAULT, "--lens", lens.address]).exit_code == 0
+    labels = dict(rows)
+    assert labels["Third-party settlement"] == "Open" and labels["Reservation floor (raw)"] == "450"
+    assert labels["B_total (value, lens)"] == "1085"
+    rows.clear()
+    assert CliRunner().invoke(cli, ["v2", "vault", VAULT]).exit_code == 0
+    assert dict(rows)["dyn_liqLTV_t"] == "N/A (pass --lens)"
 
 
 def _stub_connection(monkeypatch):

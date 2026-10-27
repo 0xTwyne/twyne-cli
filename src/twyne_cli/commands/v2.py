@@ -42,6 +42,13 @@ def _val(v: int | None) -> str:
     return "N/A (price unavailable)" if v is None else str(v)
 
 
+def _res(v: int | None, lens_view: dict | None) -> str:
+    """A lens reservation value: None means no lens, or a lens that has no price of C."""
+    if v is not None:
+        return str(v)
+    return "N/A (price unavailable)" if lens_view else "N/A (pass --lens)"
+
+
 def _block_time(block: int | None) -> int:
     from ape import chain
 
@@ -62,11 +69,14 @@ def v2():
 
 @v2.command("vault")
 @click.argument("address")
+@click.option("--lens", "lens_address", default=None,
+              help="Periphery lens that serves the vault (CreditLoanV2Lens or CreditLoanV2AaveLens). "
+                   "Adds dyn_liqLTV_t, the reservation floor and target, the exact B_total and the settlement state.")
 @pass_ctx
-def vault_cmd(ctx: TwyneContext, address: str):
+def vault_cmd(ctx: TwyneContext, address: str, lens_address: str | None):
     """Show C, B_ext, B_int, B_total, C_LP, liqLTV_t, health, the single trigger, the reservation and price status."""
     from .. import v2 as v2mod
-    from ..contracts import collateral_vault_v2, credit_vault, vault_manager_v2
+    from ..contracts import collateral_vault_v2, credit_loan_v2_lens, credit_vault, vault_manager_v2
 
     ctx.connect()
     try:
@@ -75,7 +85,9 @@ def vault_cmd(ctx: TwyneContext, address: str):
         manager = vault_manager_v2(vault.twyneVaultManager(**_kw(block)))
         iv = credit_vault(vault.intermediateVault(**_kw(block)))
         oracle = _router(iv, block)
-        s = v2mod.vault_v2_state(vault, manager, iv, oracle, block)
+        lens = credit_loan_v2_lens(lens_address) if lens_address else None
+        s = v2mod.vault_v2_state(vault, manager, iv, oracle, block, lens)
+        lv = s["lens_view"]
         p, rsv = s["price_of_c"], s["reservation"]
         ss, ramp = s["self_settlement"], s["borrow_ramp"]
         _emit(
@@ -93,21 +105,27 @@ def vault_cmd(ctx: TwyneContext, address: str):
                 ("B_int (raw)", str(s["b_int_raw"])),
                 ("C_LP (raw)", str(s["c_lp_raw"])),
                 ("C (value)", _val(s["c_value"])),
-                ("B_total (value, estimate)", _val(s["b_total_value"])),
+                ("B_total (value, lens)" if lv else "B_total (value, estimate)", _val(s["b_total_value"])),
                 ("", ""),
                 ("liqLTV_t", _bps(s["liq_ltv_t_bps"])),
                 ("max liqLTV_t", _bps(s["max_liq_ltv_t_bps"])),
                 ("liqLTV_t* = min(liqLTV_t, max)", _bps(s["liq_ltv_t_star_bps"])),
                 ("dyn_liqLTV_t", _bps(s["dyn_liq_ltv_t_bps"]) if s["dyn_liq_ltv_t_bps"] is not None
-                 else "N/A (needs the lens)"),
+                 else ("N/A (price unavailable)" if lv else "N/A (pass --lens)")),
                 ("Operating LTV_t", _bps(s["operating_ltv_t_bps"])),
-                ("Health (liqLTV_t* / LTV_t)", _hf(s["health_factor_t"])),
+                ("Health (dyn_liqLTV_t / LTV_t)" if lv and s["health_basis"] == "dyn_liq_ltv_t"
+                 else "Health (liqLTV_t* / LTV_t)", _hf(s["health_factor_t"])),
                 ("Max feasible liqLTV_t", _bps(s["max_feasible_liq_ltv_t_bps"])),
                 ("Can Liquidate (single trigger)", str(s["can_liquidate"])),
+                *([("Liquidatable (lens)", str(lv["liquidatable"])),
+                   ("Third-party settlement", lv["settlement"]),
+                   ("IV limit reached (beyond budget)", str(lv["iv_limit_reached"]))] if lv else []),
                 ("Externally Liquidated", str(s["externally_liquidated"])),
                 ("", ""),
                 ("Reservation C_LP now (raw)", str(rsv["current_raw"])),
-                ("Reservation floor / target (raw)", "N/A (needs the lens)"),  # TODO(lens)
+                ("Reservation floor (raw)", _res(rsv["floor_raw"], lv)),
+                ("Reservation target (raw)", _res(rsv["target_raw"], lv)),
+                ("Reservation after next own touch (raw)", _res(rsv["rule_target_raw"], lv)),
                 ("Reservation cash cap (raw)", _val(rsv["cash_cap_raw"])),
                 ("", ""),
                 ("Price of C", p["status"]),
