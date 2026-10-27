@@ -328,3 +328,49 @@ def resolve_aave_factory_vault(address: str) -> str | None:
         if iv.lower() == addr_lower:
             return wrapper
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Credit~loan V2 and pooled long-tail vaults (read-only ABIs)
+#
+# No registry addresses: every address a V2 read needs (manager, intermediate
+# vault, pooled registry, residual account) is read from the
+# vault or pool the user passes in. The periphery lens is the exception: no
+# vault names it, so `twyne v2 vault --lens <address>` takes it. No V2 contract
+# is deployed yet.
+# --------------------------------------------------------------------------- #
+
+
+def collateral_vault_v2(address: str):
+    """Get a credit~loan V2 collateral vault (Euler, Aave or Morpho) — views only."""
+    return _contract(address, abi=_load_abi("CollateralVaultV2"))
+
+
+def credit_loan_v2_lens(address: str):
+    """Get the periphery CreditLoanV2Lens / CreditLoanV2AaveLens (same ABI; views only)."""
+    return _contract(address, abi=_load_abi("CreditLoanV2Lens"))
+
+
+def pooled_vault(address: str):
+    """Get a pooled long-tail vault (pool ABI plus the module views reached by fallback)."""
+    return _contract(address, abi=_load_abi("PooledLongTailVault"))
+
+
+def pooled_residual_account(address: str):
+    """Get the pooled vault's residual account R."""
+    return _contract(address, abi=_load_abi("PooledResidualAccount"))
+
+
+def pooled_params_registry(address: str):
+    """Get the PooledParamsRegistry (excision band feasibility)."""
+    return _contract(address, abi=_load_abi("PooledParamsRegistry"))
+
+
+def vault_manager_v2(address: str):
+    """Get a VaultManagerV2 (risk parameters, rebalance fee, settlement and borrow-ramp config)."""
+    return _contract(address, abi=_load_abi("VaultManagerV2"))
+
+
+def oracle_router_at(address: str):
+    """Get a TwyneEulerRouter / EulerRouter at a given address (quotes in the vault's unit of account)."""
+    return _contract(address, abi=_load_abi("EulerRouter"))

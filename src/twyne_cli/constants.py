@@ -28,3 +28,4 @@ DEFAULT_DEADLINE_OFFSET = 20 * 60
 # DefiLlama API
 DEFILLAMA_API_URL = "https://api.llama.fi"
 DEFILLAMA_TWYNE_SLUG = "twyne"
+BPS = 10_000  # 1e4 scale of LTVs, fees and the V2 vaults' MAXFACTOR
