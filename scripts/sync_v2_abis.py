@@ -24,6 +24,8 @@ SPECS = {
         ("pooled", "PooledLongTailVaultV2.sol/PooledLongTailVaultV2.json", None),
         # reached through the pool's fallback() delegatecall; not in the pool ABI
         ("pooled", "PooledLongTailModule.sol/PooledLongTailModule.json", {"attributedLoss", "isExcisable"}),
+        # account and ledger views served by the extension (second fallback() delegatecall)
+        ("pooled", "PooledLongTailExtension.sol/PooledLongTailExtension.json", None),
     ],
     "PooledResidualAccount.json": [("pooled", "PooledResidualAccount.sol/PooledResidualAccount.json", None)],
     "PooledParamsRegistry.json": [("pooled", "PooledParamsRegistry.sol/PooledParamsRegistry.json", None)],
