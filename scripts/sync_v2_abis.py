@@ -23,13 +23,13 @@ SPECS = {
     "PooledLongTailVault.json": [
         ("pooled", "PooledLongTailVaultV2.sol/PooledLongTailVaultV2.json", None),
         # reached through the pool's fallback() delegatecall; not in the pool ABI
-        ("pooled", "PooledLongTailModule.sol/PooledLongTailModule.json", {"attributedLoss", "attributedLossReplayed", "isExcisable", "priceAge"}),
+        ("pooled", "PooledLongTailModule.sol/PooledLongTailModule.json", {"attributedLoss", "isExcisable"}),
     ],
     "PooledResidualAccount.json": [("pooled", "PooledResidualAccount.sol/PooledResidualAccount.json", None)],
     "PooledParamsRegistry.json": [("pooled", "PooledParamsRegistry.sol/PooledParamsRegistry.json", None)],
     "VaultManagerV2.json": [
         ("base", "VaultManagerV2.sol/VaultManagerV2.json", {
-            "boost", "rebalanceFee", "collateralPriceMaxAge", "priceFreshnessReader", "liqParams",
+            "boost", "rebalanceFee", "MAX_REBALANCE_FEE", "liqParams",
             "borrowBuffer", "settlementConverter", "settlementConverterTolerance",
         })
     ],

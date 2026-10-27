@@ -114,25 +114,6 @@
   },
   {
     "type": "function",
-    "name": "attributedLossReplayed",
-    "inputs": [
-      {
-        "name": "a",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "bExtOf",
     "inputs": [
       {
@@ -203,7 +184,7 @@
   },
   {
     "type": "function",
-    "name": "bucketOwedCredit",
+    "name": "bucketDebt",
     "inputs": [],
     "outputs": [
       {
@@ -230,6 +211,63 @@
   {
     "type": "function",
     "name": "cValueOf",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "capacityCreditOf",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "capacityValueOf",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "chargeAboveCap",
     "inputs": [
       {
         "name": "a",
@@ -350,6 +388,25 @@
   },
   {
     "type": "function",
+    "name": "dynLiqLtvOf",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "eulerEVC",
     "inputs": [],
     "outputs": [
@@ -438,21 +495,6 @@
     "inputs": [],
     "outputs": [
       {
-        "name": "active",
-        "type": "bool",
-        "internalType": "bool"
-      },
-      {
-        "name": "finalized",
-        "type": "bool",
-        "internalType": "bool"
-      },
-      {
-        "name": "scan",
-        "type": "bool",
-        "internalType": "bool"
-      },
-      {
         "name": "loss",
         "type": "uint256",
         "internalType": "uint256"
@@ -463,7 +505,17 @@
         "internalType": "uint256"
       },
       {
-        "name": "negTot",
+        "name": "events",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "unapplied",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "uncoveredLoss",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -766,7 +818,7 @@
   },
   {
     "type": "function",
-    "name": "postedCredit",
+    "name": "postedBookOf",
     "inputs": [],
     "outputs": [
       {
@@ -779,7 +831,7 @@
   },
   {
     "type": "function",
-    "name": "priceAge",
+    "name": "postedCredit",
     "inputs": [],
     "outputs": [
       {
@@ -806,32 +858,6 @@
   {
     "type": "function",
     "name": "rInt",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "rMax",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "rate",
     "inputs": [],
     "outputs": [
       {
@@ -883,19 +909,6 @@
         "name": "",
         "type": "address",
         "internalType": "contract PooledResidualAccount"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "residualAfter",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -1006,6 +1019,19 @@
         "name": "",
         "type": "address",
         "internalType": "contract VaultManagerV2"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "unbackedLoss",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"

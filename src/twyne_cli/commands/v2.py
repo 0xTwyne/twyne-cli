@@ -31,7 +31,11 @@ def _ts(v: int | None) -> str:
 def _due(le: dict) -> str:
     if le["status"] == "waiting":
         return f"{le['due_at']} ({le['seconds_left']} s left)"
-    return {"due": f"{le['due_at']} (due now)", "governance-only": "governance only"}.get(le["status"], le["status"])
+    return {
+        "due": f"{le['due_at']} (due now)",
+        "governance-only": "governance only",
+        "permissionless": "anyone, at any time",
+    }.get(le["status"], le["status"])
 
 
 def _val(v: int | None) -> str:
@@ -53,21 +57,16 @@ def _emit(ctx: TwyneContext, data: dict, rows: list[tuple[str, str]], title: str
 
 @click.group("v2")
 def v2():
-    """Credit~loan V2 vaults and pooled long-tail vaults (no V2 contract is deployed yet)."""
+    """Credit~loan V2 vaults and pooled long-tail vaults (read-only)."""
 
 
 @v2.command("vault")
 @click.argument("address")
 @pass_ctx
 def vault_cmd(ctx: TwyneContext, address: str):
-    """Show C, B_ext, B_int, B_total, C_LP, liqLTV_t, health, max feasible liqLTV_t and price staleness."""
+    """Show C, B_ext, B_int, B_total, C_LP, liqLTV_t, health, the single trigger, the reservation and price status."""
     from .. import v2 as v2mod
-    from ..contracts import (
-        collateral_vault_v2,
-        credit_vault,
-        price_freshness_reader,
-        vault_manager_v2,
-    )
+    from ..contracts import collateral_vault_v2, credit_vault, vault_manager_v2
 
     ctx.connect()
     try:
@@ -75,11 +74,9 @@ def vault_cmd(ctx: TwyneContext, address: str):
         vault = collateral_vault_v2(address)
         manager = vault_manager_v2(vault.twyneVaultManager(**_kw(block)))
         iv = credit_vault(vault.intermediateVault(**_kw(block)))
-        reader_addr = manager.priceFreshnessReader(**_kw(block))
-        reader = None if reader_addr == ZERO else price_freshness_reader(reader_addr)
         oracle = _router(iv, block)
-        s = v2mod.vault_v2_state(vault, manager, iv, oracle, reader, block, _block_time(block))
-        p = s["price_of_c"]
+        s = v2mod.vault_v2_state(vault, manager, iv, oracle, block)
+        p, rsv = s["price_of_c"], s["reservation"]
         ss, ramp = s["self_settlement"], s["borrow_ramp"]
         _emit(
             ctx,
@@ -96,18 +93,25 @@ def vault_cmd(ctx: TwyneContext, address: str):
                 ("B_int (raw)", str(s["b_int_raw"])),
                 ("C_LP (raw)", str(s["c_lp_raw"])),
                 ("C (value)", _val(s["c_value"])),
-                ("B_total (value)", _val(s["b_total_value"])),
+                ("B_total (value, estimate)", _val(s["b_total_value"])),
                 ("", ""),
                 ("liqLTV_t", _bps(s["liq_ltv_t_bps"])),
+                ("max liqLTV_t", _bps(s["max_liq_ltv_t_bps"])),
+                ("liqLTV_t* = min(liqLTV_t, max)", _bps(s["liq_ltv_t_star_bps"])),
+                ("dyn_liqLTV_t", _bps(s["dyn_liq_ltv_t_bps"]) if s["dyn_liq_ltv_t_bps"] is not None
+                 else "N/A (needs the lens)"),
                 ("Operating LTV_t", _bps(s["operating_ltv_t_bps"])),
-                ("Health (liqLTV_t / LTV_t)", _hf(s["health_factor_t"])),
+                ("Health (liqLTV_t* / LTV_t)", _hf(s["health_factor_t"])),
                 ("Max feasible liqLTV_t", _bps(s["max_feasible_liq_ltv_t_bps"])),
-                ("Can Liquidate", str(s["can_liquidate"])),
+                ("Can Liquidate (single trigger)", str(s["can_liquidate"])),
                 ("Externally Liquidated", str(s["externally_liquidated"])),
                 ("", ""),
+                ("Reservation C_LP now (raw)", str(rsv["current_raw"])),
+                ("Reservation floor / target (raw)", "N/A (needs the lens)"),  # TODO(lens)
+                ("Reservation cash cap (raw)", _val(rsv["cash_cap_raw"])),
+                ("", ""),
                 ("Price of C", p["status"]),
-                ("Price age / bound (s)", f"{p['age']} / {p['max_age']}"),
-                ("Risk-adding ops blocked", str(p["blocked_operations"])),
+                ("Operations blocked (all but plain repay)", str(p["blocked_operations"])),
                 ("", ""),
                 ("Self-settlement mode", "N/A" if ss["name"] is None else f"{ss['mode']} ({ss['name']})"),
                 ("Settlement converter / tolerance", f"{ss['converter']} / {_bps(ss['converter_tolerance_bps'])}"
@@ -144,7 +148,7 @@ def pool_cmd(ctx: TwyneContext, address: str):
         registry = None if reg_addr == ZERO else pooled_params_registry(reg_addr)
         s = v2mod.pool_state(pool, registry, block, _block_time(block))
         band, fb, px = s["excision_band"], s["fallback_record"], s["price_of_c"]
-        caps, le = s["caps"], s["loss_excision"]
+        caps, le, bk = s["caps"], s["loss_excision"], s["bucket"]
         _emit(
             ctx,
             s,
@@ -168,9 +172,12 @@ def pool_cmd(ctx: TwyneContext, address: str):
                 ("Band feasible", str(band["band_feasible"])),
                 ("", ""),
                 ("Fallback record open", str(fb["open"])),
-                ("Fallback finalized / scan open", f"{fb['finalized']} / {fb['scan_open']}"),
+                ("Fallback events", str(fb["events"])),
                 ("Fallback loss / repaid (raw)", f"{fb['loss_credit_raw']} / {fb['repaid_debt_raw']}"),
+                ("Charges above the caps (raw)", str(fb["uncovered_loss_raw"])),
                 ("Pending splits", str(fb["pending_splits"])),
+                ("Residual debt / unbacked loss (raw)", f"{_val(s['residual_debt_raw'])} / {_val(s['unbacked_loss_raw'])}"),
+                ("Claim bucket C / debt (raw, Option A)", f"{_val(bk['c_raw'])} / {_val(bk['debt_raw'])}"),
                 ("Loss excision (option)", le["option"]),
                 ("Fallback recorded at", _ts(le["recorded_at"])),
                 ("Loss excision due", _due(le)),
@@ -179,7 +186,6 @@ def pool_cmd(ctx: TwyneContext, address: str):
                 ("Collateral cap used / cap (raw)", f"{caps['collateral_used_raw']} / {_cap(caps['collateral_cap_raw'])}"),
                 ("", ""),
                 ("Price of C available / fresh", f"{px['available']} / {px['fresh']}"),
-                ("Price of C age (s)", str(px["age"])),
             ],
             "Pooled Long-Tail Vault",
         )
@@ -215,13 +221,15 @@ def account_cmd(ctx: TwyneContext, pool: str, borrower: str):
                 ("B_ext (raw)", str(s["b_ext_raw"])),
                 ("B_int (raw)", str(s["b_int_raw"])),
                 ("C_LP (raw)", str(s["c_lp_raw"])),
-                ("Required credit (raw)", _val(s["required_credit_raw"])),
+                ("Reservation floor (raw)", _val(s["required_credit_raw"])),
+                ("Reservation target (raw)", _val(s["capacity_credit_raw"])),
                 ("C (value)", _val(s["c_value"])),
                 ("B_total (value)", _val(s["b_total_value"])),
                 ("LTV_t", _bps(s["ltv_t_bps"])),
-                ("Health (liqLTV_t / LTV_t)", _hf(s["health_factor_t"])),
+                ("dyn_liqLTV_t", _bps(s["dyn_liq_ltv_t_bps"])),
+                ("Health (dyn_liqLTV_t / LTV_t)", _hf(s["health_factor_t"])),
                 ("Excess credit", _val(s["excess_credit"])),
-                ("Liquidatable", str(s["liquidatable"])),
+                ("Liquidatable (single trigger)", str(s["liquidatable"])),
                 ("Excisable", str(s["excisable"])),
             ]
         _emit(ctx, s, rows, "Pooled Account")

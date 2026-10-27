@@ -334,7 +334,7 @@ def resolve_aave_factory_vault(address: str) -> str | None:
 # Credit~loan V2 and pooled long-tail vaults (read-only ABIs)
 #
 # No registry addresses: every address a V2 read needs (manager, intermediate
-# vault, price reader, pooled registry, residual account) is read from the
+# vault, pooled registry, residual account) is read from the
 # vault or pool the user passes in. No V2 contract is deployed yet.
 # --------------------------------------------------------------------------- #
 
@@ -360,13 +360,8 @@ def pooled_params_registry(address: str):
 
 
 def vault_manager_v2(address: str):
-    """Get a VaultManagerV2 (risk parameters and price-freshness config)."""
+    """Get a VaultManagerV2 (risk parameters, rebalance fee, settlement and borrow-ramp config)."""
     return _contract(address, abi=_load_abi("VaultManagerV2"))
-
-
-def price_freshness_reader(address: str):
-    """Get the TwynePriceFreshnessReader the manager points to."""
-    return _contract(address, abi=_load_abi("PriceFreshnessReader"))
 
 
 def oracle_router_at(address: str):

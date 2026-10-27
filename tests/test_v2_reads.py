@@ -21,7 +21,6 @@ ASSET = "0x00000000000000000000000000000000000000D4"
 LOAN = "0x00000000000000000000000000000000000000E5"
 CREDIT = "0x00000000000000000000000000000000000000F6"
 UOA = "0x0000000000000000000000000000000000000001"
-READER = "0x0000000000000000000000000000000000000002"
 BORROWER = "0x0000000000000000000000000000000000000003"
 ZERO = v2.ZERO_ADDRESS
 
@@ -45,40 +44,16 @@ def make_vault(**over):
 CONVERTER = "0x00000000000000000000000000000000000000C9"
 
 
-def make_world(vault=None, max_age=3_600, fee=500, quotes=None, buffer=0):
+def make_world(vault=None, fee=500, quotes=None, buffer=0, max_liq_ltv=9_500, cash=1_000):
     vault = vault or make_vault()
     manager = SimpleNamespace(
-        rebalanceFee=fn(fee), collateralPriceMaxAge=fn(max_age), borrowBuffer=fn(buffer),
-        settlementConverter=fn(CONVERTER), settlementConverterTolerance=fn(50),
+        rebalanceFee=fn(fee), borrowBuffer=fn(buffer), liqParams=fn((9_000, max_liq_ltv)),
+        settlementConverter=fn(CONVERTER), settlementConverterTolerance=fn(50), MAX_REBALANCE_FEE=fn(1_000),
     )
-    iv = SimpleNamespace(unitOfAccount=fn(UOA), oracle=fn("0xROUTER"))
+    iv = SimpleNamespace(unitOfAccount=fn(UOA), oracle=fn("0xROUTER"), cash=fn(cash))
     # unit of account value = amount * 2 (bid) / amount * 2 (ask): price 2 for every asset
     oracle = SimpleNamespace(getQuotes=MagicMock(side_effect=quotes or (lambda amt, b, q, **kw: (amt * 2, amt * 2))))
-    reader = SimpleNamespace(address=READER, priceUpdatedAt=fn(10_000 - 100))
-    return vault, manager, iv, oracle, reader
-
-
-# --------------------------------------------------------------------------- #
-# price staleness
-# --------------------------------------------------------------------------- #
-
-
-def test_price_status_no_bound():
-    s = v2.price_status(0, ZERO, None, now=1_000)
-    assert s["status"] == v2.NO_BOUND and not s["blocked_operations"]
-
-
-def test_price_status_fresh_and_stale_edges():
-    # age == bound is still fresh (the vault requires updatedAt + maxAge >= now)
-    assert v2.price_status(100, READER, 900, now=1_000)["status"] == v2.FRESH
-    s = v2.price_status(100, READER, 899, now=1_000)
-    assert s["status"] == v2.STALE and s["age"] == 101 and s["blocked_operations"]
-
-
-def test_price_status_fails_closed():
-    assert v2.price_status(100, ZERO, None, 1_000)["status"] == v2.READER_MISSING
-    assert v2.price_status(100, READER, None, 1_000)["status"] == v2.UNREADABLE
-    assert v2.price_status(100, READER, None, 1_000)["blocked_operations"]
+    return vault, manager, iv, oracle
 
 
 # --------------------------------------------------------------------------- #
@@ -87,50 +62,97 @@ def test_price_status_fails_closed():
 
 
 def test_vault_state_values_and_health():
-    vault, manager, iv, oracle, reader = make_world()
-    s = v2.vault_v2_state(vault, manager, iv, oracle, reader, None, now=10_000)
+    vault, manager, iv, oracle = make_world()
+    s = v2.vault_v2_state(vault, manager, iv, oracle, None)
     assert (s["c_raw"], s["b_ext_raw"], s["c_lp_raw"]) == (1_000, 500, 300)
     assert s["b_int_raw"] == 40  # maxRelease 340 - totalReserved 300
     assert s["c_value"] == 2_000
     # B_total = B_ext + (1 + 5%) * B_int, price 2 => 1000 + 84
     assert s["b_total_value"] == 1_084
     assert s["operating_ltv_t_bps"] == 5_420
+    # health is measured against liqLTV_t* = min(8000, 9500) = 8000
     assert s["health_factor_t"] == pytest.approx(8_000 / 5_420, rel=1e-6)
     assert s["liq_ltv_t_bps"] == 8_000 and s["max_feasible_liq_ltv_t_bps"] == 9_000
-    assert s["price_of_c"]["status"] == v2.FRESH and s["price_of_c"]["age"] == 100
+    assert s["price_of_c"] == {"status": v2.FRESH, "blocked_operations": False}
+
+
+def test_liq_ltv_star_is_capped_by_max_liq_ltv():
+    vault, manager, iv, oracle = make_world(max_liq_ltv=7_000)
+    s = v2.vault_v2_state(vault, manager, iv, oracle, None)
+    assert (s["liq_ltv_t_bps"], s["max_liq_ltv_t_bps"], s["liq_ltv_t_star_bps"]) == (8_000, 7_000, 7_000)
+    assert s["health_factor_t"] == pytest.approx(7_000 / 5_420, rel=1e-6)
+    manager.liqParams.assert_called_once_with(IV, TARGET, LOAN)
+
+
+def test_vault_dyn_liq_ltv_and_reservation_internals_need_the_lens():
+    vault, manager, iv, oracle = make_world()
+    s = v2.vault_v2_state(vault, manager, iv, oracle, None)
+    assert s["dyn_liq_ltv_t_bps"] is None  # TODO(lens)
+    assert s["reservation"]["floor_raw"] is None and s["reservation"]["target_raw"] is None  # TODO(lens)
+    assert s["can_liquidate"] is False  # the vault's own trigger is read, never re-derived
+    assert "external_health_factor" not in s
+
+
+def test_vault_reservation_cash_cap_is_cash_plus_credit_held_against_iv_debt():
+    # reserved 300, IV debt 340 => held 300; cash 1000
+    vault, manager, iv, oracle = make_world()
+    r = v2.vault_v2_state(vault, manager, iv, oracle, None)["reservation"]
+    assert (r["current_raw"], r["cash_cap_raw"]) == (300, 1_300)
+    # credit above the IV debt is not held against it
+    vault, manager, iv, oracle = make_world(make_vault(maxRelease=100, totalReserved=300))
+    assert v2.vault_v2_state(vault, manager, iv, oracle, None)["reservation"]["cash_cap_raw"] == 1_100
+    iv.cash = fn(side_effect=RuntimeError("no cash view"))
+    assert v2.vault_v2_state(vault, manager, iv, oracle, None)["reservation"]["cash_cap_raw"] is None
 
 
 def test_vault_state_debt_free_has_no_health():
-    vault, manager, iv, oracle, reader = make_world(make_vault(maxRepay=0, maxRelease=300))
-    s = v2.vault_v2_state(vault, manager, iv, oracle, reader, None, now=10_000)
+    vault, manager, iv, oracle = make_world(make_vault(maxRepay=0, maxRelease=300))
+    s = v2.vault_v2_state(vault, manager, iv, oracle, None)
     assert s["b_total_value"] == 0 and s["health_factor_t"] is None and s["operating_ltv_t_bps"] == 0
 
 
 def test_vault_state_b_int_never_negative():
-    vault, manager, iv, oracle, reader = make_world(make_vault(maxRelease=100, totalReserved=300))
-    assert v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["b_int_raw"] == 0
+    vault, manager, iv, oracle = make_world(make_vault(maxRelease=100, totalReserved=300))
+    assert v2.vault_v2_state(vault, manager, iv, oracle, None)["b_int_raw"] == 0
 
 
 def test_vault_state_price_unavailable_is_null_not_error():
     def boom(*a, **k):
         raise RuntimeError("PriceTooOld")
 
-    vault, manager, iv, oracle, reader = make_world(quotes=boom)
-    reader.priceUpdatedAt = fn(side_effect=RuntimeError("revert"))
-    s = v2.vault_v2_state(vault, manager, iv, oracle, reader, None, now=10_000)
+    vault, manager, iv, oracle = make_world(quotes=boom)
+    s = v2.vault_v2_state(vault, manager, iv, oracle, None)
     assert s["c_value"] is None and s["b_total_value"] is None and s["health_factor_t"] is None
-    assert s["price_of_c"]["status"] == v2.UNREADABLE
+    # fresh price or revert: every operation but a plain repay reverts
+    assert s["price_of_c"] == {"status": v2.UNAVAILABLE, "blocked_operations": True}
 
 
-def test_vault_state_no_reader_with_bound_fails_closed():
-    vault, manager, iv, oracle, _ = make_world()
-    s = v2.vault_v2_state(vault, manager, iv, oracle, None, None, now=10_000)
-    assert s["price_of_c"]["status"] == v2.READER_MISSING and s["price_of_c"]["blocked_operations"]
+def test_vault_price_probe_prices_one_unit_when_c_is_zero():
+    # CreditLoanV2Checks.collateralPriceUsable quotes max(C, 1): a debt-free, empty vault is still probed
+    vault, manager, iv, oracle = make_world(make_vault(totalAssets=0, maxRepay=0, maxRelease=0, totalReserved=0))
+    s = v2.vault_v2_state(vault, manager, iv, oracle, None)
+    assert s["price_of_c"]["status"] == v2.FRESH
+    assert any(c.args[0] == 1 and c.args[1] == ASSET for c in oracle.getQuotes.call_args_list)
+
+
+def test_removed_manager_settings_are_not_read():
+    # setCollateralPriceMaxAge / setPriceFreshnessReader (and the T_liq tier) are gone from the manager
+    vault, manager, iv, oracle = make_world()
+    assert not hasattr(manager, "collateralPriceMaxAge") and not hasattr(manager, "priceFreshnessReader")
+    v2.vault_v2_state(vault, manager, iv, oracle, None)  # reads nothing that the namespace lacks
+
+
+def test_rebalance_fee_and_its_cap():
+    vault, manager, iv, oracle = make_world(fee=250)
+    s = v2.vault_v2_state(vault, manager, iv, oracle, None)
+    assert (s["rebalance_fee_bps"], s["rebalance_fee_cap_bps"]) == (250, 1_000)
+    del manager.MAX_REBALANCE_FEE  # a manager build without the cap
+    assert v2.vault_v2_state(vault, manager, iv, oracle, None)["rebalance_fee_cap_bps"] is None
 
 
 def test_vault_state_passes_block_to_every_call():
-    vault, manager, iv, oracle, reader = make_world()
-    v2.vault_v2_state(vault, manager, iv, oracle, reader, 123, now=10_000)
+    vault, manager, iv, oracle = make_world()
+    v2.vault_v2_state(vault, manager, iv, oracle, 123)
     vault.totalAssets.assert_called_with(block_identifier=123)
     manager.rebalanceFee.assert_called_with(IV, TARGET, LOAN, block_identifier=123)
     oracle.getQuotes.assert_called()
@@ -139,30 +161,30 @@ def test_vault_state_passes_block_to_every_call():
 
 def test_self_settlement_modes():
     for mode, name in ((0, "caller-supplied"), (1, "receipt-token-deposit"), (2, "converter")):
-        vault, manager, iv, oracle, reader = make_world(make_vault(selfSettlementMode=mode))
-        ss = v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["self_settlement"]
+        vault, manager, iv, oracle = make_world(make_vault(selfSettlementMode=mode))
+        ss = v2.vault_v2_state(vault, manager, iv, oracle, None)["self_settlement"]
         assert (ss["mode"], ss["name"]) == (mode, name)
         # the converter is read only in mode 2
         assert (ss["converter"], ss["converter_tolerance_bps"]) == ((CONVERTER, 50) if mode == 2 else (None, None))
 
 
 def test_self_settlement_absent_on_older_vault_is_null():
-    vault, manager, iv, oracle, reader = make_world()
+    vault, manager, iv, oracle = make_world()
     vault.selfSettlementMode = fn(side_effect=RuntimeError("no such selector"))
-    ss = v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["self_settlement"]
+    ss = v2.vault_v2_state(vault, manager, iv, oracle, None)["self_settlement"]
     assert ss["mode"] is None and ss["name"] is None
     del vault.selfSettlementMode  # ABI without the view at all
-    assert v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["self_settlement"]["mode"] is None
+    assert v2.vault_v2_state(vault, manager, iv, oracle, None)["self_settlement"]["mode"] is None
 
 
 def test_borrow_ramp_state():
-    vault, manager, iv, oracle, reader = make_world(buffer=250)
-    r = v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["borrow_ramp"]
+    vault, manager, iv, oracle = make_world(buffer=250)
+    r = v2.vault_v2_state(vault, manager, iv, oracle, None)["borrow_ramp"]
     assert r == {"delta_bps": 250, "enabled": True}
-    vault, manager, iv, oracle, reader = make_world(buffer=0)
-    assert v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["borrow_ramp"]["enabled"] is False
+    vault, manager, iv, oracle = make_world(buffer=0)
+    assert v2.vault_v2_state(vault, manager, iv, oracle, None)["borrow_ramp"]["enabled"] is False
     manager.borrowBuffer = fn(side_effect=RuntimeError("old manager"))
-    r = v2.vault_v2_state(vault, manager, iv, oracle, reader, None, 10_000)["borrow_ramp"]
+    r = v2.vault_v2_state(vault, manager, iv, oracle, None)["borrow_ramp"]
     assert r == {"delta_bps": None, "enabled": None}
 
 
@@ -175,13 +197,25 @@ def make_pool(delta_x=300, **over):
     vals = dict(
         intermediateVault=IV, targetVault=TARGET, targetAsset=LOAN, collateralAsset=ASSET, creditAsset=CREDIT,
         residualAccount="0x00000000000000000000000000000000000000A9", openCount=3, cTot=900,
-        clpTot=400, postedCredit=380, owedCredit=400, extDebt=700, ivDebt=420, rate=123, maxFeasibleLiqLTV=8_500,
+        clpTot=400, postedCredit=380, owedCredit=400, extDebt=700, ivDebt=420, maxFeasibleLiqLTV=8_500,
         externalRisk=False, excisionGrowthBound=10_500, pendingSplits=2, settleEventCount=7, isPriceFresh=True,
-        priceAge=60, pooledParams=(delta_x, 200), fallbackState=(True, False, False, 50, 40, 5),
-        collateralPrice=(True, 2 * 10**18),
+        pooledParams=(delta_x, 200), fallbackState=(50, 40, 3, 2, 5),  # loss, repaid, events, unapplied, uncovered
+        collateralPrice=(True, 2 * 10**18), postedBookOf=385, residualDebt=9, unbackedLoss=4,
+        bucketC=11, bucketDebt=12,
     )
     vals.update(over)
     return SimpleNamespace(address="0x00000000000000000000000000000000000000AA", **{k: fn(v) for k, v in vals.items()})
+
+
+def test_pool_fallback_record_closed_when_every_account_applied():
+    pool = make_pool(fallbackState=(0, 0, 3, 0, 0))
+    assert v2.pool_state(pool, None, None, 0)["fallback_record"]["open"] is False
+
+
+def test_pool_option_b_has_no_bucket():
+    pool = make_pool()
+    del pool.bucketC, pool.bucketDebt
+    assert v2.pool_state(pool, None, None, 0)["bucket"] == {"c_raw": None, "debt_raw": None}
 
 
 def test_pool_state_band_fallback_and_splits():
@@ -191,7 +225,10 @@ def test_pool_state_band_fallback_and_splits():
         "delta_x_bps": 300, "d_max_bps": 200, "enabled": True, "growth_bound_bps": 10_500, "band_feasible": True,
     }
     fb = s["fallback_record"]
-    assert fb["open"] and not fb["finalized"] and fb["loss_credit_raw"] == 50 and fb["pending_splits"] == 2
+    assert fb["open"] and fb["events"] == 3 and fb["loss_credit_raw"] == 50 and fb["pending_splits"] == 2
+    assert (fb["repaid_debt_raw"], fb["uncovered_loss_raw"]) == (40, 5)
+    assert (s["residual_debt_raw"], s["unbacked_loss_raw"], s["posted_book_raw"]) == (9, 4, 385)
+    assert s["bucket"] == {"c_raw": 11, "debt_raw": 12}
     assert s["open_accounts"] == 3 and s["owed_credit_raw"] == 400 and s["posted_credit_raw"] == 380
     registry.isBandFeasible.assert_called_once_with(IV, TARGET, LOAN)
 
@@ -218,12 +255,23 @@ def test_loss_excision_option_a_states():
     assert f(50, 100, 100)["status"] == "due" and f(50, 90, 100)["seconds_left"] == 0
 
 
-def test_loss_excision_option_b_has_no_views():
+def test_loss_excision_option_b_is_permissionless_at_any_time():
+    f = v2.loss_excision_state
+    for recorded in (0, 50):
+        le = f(recorded, None, 100)
+        assert (le["option"], le["status"], le["due_at"]) == ("B", "permissionless", None)
+    pool = make_pool(fallbackRecordedAt=1_000)
+    pool.lossExcisionDueAt = fn(side_effect=RuntimeError("no selector"))
+    le = v2.pool_state(pool, None, None, 0)["loss_excision"]
+    assert le["option"] == "B" and le["status"] == "permissionless" and le["recorded_at"] == 1_000
+
+
+def test_loss_excision_without_either_view_is_not_applicable():
     pool = make_pool()
     pool.fallbackRecordedAt = fn(side_effect=RuntimeError("no selector"))
     pool.lossExcisionDueAt = fn(side_effect=RuntimeError("no selector"))
     le = v2.pool_state(pool, None, None, 0)["loss_excision"]
-    assert le["option"] == "B" and le["status"] == "not-applicable"
+    assert le["option"] is None and le["status"] == "not-applicable"
 
 
 def test_pool_state_option_a_reads_due_time():
@@ -237,10 +285,12 @@ def test_pool_state_excision_disabled_and_no_registry():
     assert not s["excision_band"]["enabled"] and s["excision_band"]["band_feasible"] is None
 
 
-def test_pool_state_price_age_unreadable_is_null():
+def test_pool_state_has_no_rate_or_price_age():
+    # the pool dropped `rate()` and `priceAge()`; price status is `isPriceFresh` plus the bid
     pool = make_pool()
-    pool.priceAge = fn(side_effect=RuntimeError("no reader"))
-    assert v2.pool_state(pool, None, None, 0)["price_of_c"]["age"] is None
+    s = v2.pool_state(pool, None, None, 0)
+    assert "rate" not in s and "age" not in s["price_of_c"]
+    assert s["price_of_c"] == {"available": True, "bid": 2 * 10**18, "fresh": True}
 
 
 def make_account_pool(is_open=True, price_ok=True, **over):
@@ -256,6 +306,9 @@ def make_account_pool(is_open=True, price_ok=True, **over):
     pool.bIntOf = fn(15)
     pool.ivDebtOf = fn(215)
     pool.requiredCreditOf = fn(190)
+    pool.capacityCreditOf = priced(260)
+    pool.capacityValueOf = priced(600)
+    pool.dynLiqLtvOf = priced(6_500)
     pool.cValueOf = priced(1_000)
     pool.totalDebtOf = priced(400)
     pool.ltvOf = priced(4_000)
@@ -272,13 +325,16 @@ def test_account_state_open():
     s = v2.account_state(make_account_pool(), BORROWER, None)
     assert s["open"] and s["c_raw"] == 500 and s["b_ext_raw"] == 250 and s["b_int_raw"] == 15
     assert s["excision_trigger_ltv_bps"] == 7_300  # liqLTV 7000 + delta_x 300
-    assert s["health_factor_t"] == pytest.approx(7_000 / 4_000)
+    # health is dyn_liqLTV_t / LTV_t (the one trigger), not liqLTV_t / LTV_t
+    assert s["dyn_liq_ltv_t_bps"] == 6_500 and s["health_factor_t"] == pytest.approx(6_500 / 4_000)
+    assert (s["required_credit_raw"], s["capacity_credit_raw"], s["capacity_value"]) == (190, 260, 600)
     assert s["excess_credit"] == -10 and s["liquidatable"] is False and s["split_pending"] is False
 
 
 def test_account_state_price_beyond_liquidation_bound_gives_nulls():
     s = v2.account_state(make_account_pool(price_ok=False), BORROWER, None)
     assert s["c_value"] is None and s["ltv_t_bps"] is None and s["health_factor_t"] is None
+    assert s["dyn_liq_ltv_t_bps"] is None and s["capacity_credit_raw"] is None
     assert s["liquidatable"] is None and s["b_ext_raw"] == 250  # amounts without a price still read
 
 
@@ -310,13 +366,19 @@ V2_NAMES = {
     "CollateralVaultV2": {"selfSettlementMode", "totalAssets", "totalReserved", "maxRepay", "maxRelease", "twyneLiqLTV", "maxFeasibleLiqLTV",
                           "canLiquidate", "internalDebtToSettle", "intermediateVault", "twyneVaultManager"},
     "PooledLongTailVault": {"accounts", "fallbackState", "pendingSplits", "pooledParams", "excisionGrowthBound",
-                            "residualAccount", "isExcisable", "priceAge", "attributedLoss", "totalDebtOf",
-                            "fallbackRecordedAt", "lossExcisionDueAt"},
+                            "residualAccount", "isExcisable", "attributedLoss", "totalDebtOf", "fallbackRecordedAt",
+                            "lossExcisionDueAt", "dynLiqLtvOf", "capacityCreditOf", "capacityValueOf", "requiredCreditOf",
+                            "postedBookOf", "residualDebt", "unbackedLoss", "chargeAboveCap", "bucketC", "bucketDebt"},
     "PooledResidualAccount": {"totalAssets", "asset", "pool"},
-    "PooledParamsRegistry": {"isBandFeasible", "pooledParams", "poolCaps"},
-    "VaultManagerV2": {"rebalanceFee", "collateralPriceMaxAge", "priceFreshnessReader", "boost", "liqParams",
-                       "borrowBuffer", "settlementConverter", "settlementConverterTolerance"},
-    "PriceFreshnessReader": {"priceUpdatedAt"},
+    "PooledParamsRegistry": {"isBandFeasible", "pooledParams", "poolCaps", "maxFeasibleLiqLTV"},
+    "VaultManagerV2": {"rebalanceFee", "MAX_REBALANCE_FEE", "boost", "liqParams", "borrowBuffer",
+                       "settlementConverter", "settlementConverterTolerance"},
+}
+
+# Removed from the contracts in round 5: the two-tier staleness rule and the pool's rate/price-age/scan views
+REMOVED_NAMES = {
+    "VaultManagerV2": {"collateralPriceMaxAge", "priceFreshnessReader"},
+    "PooledLongTailVault": {"priceAge", "rate", "rMax", "residualAfter", "attributedLossReplayed", "bucketOwedCredit"},
 }
 
 
@@ -327,6 +389,24 @@ def test_abis_carry_the_functions_the_reads_use(name):
     assert all(e["type"] == "function" and e["stateMutability"] in ("view", "pure") for e in abi)
 
 
+@pytest.mark.parametrize("name", sorted(REMOVED_NAMES))
+def test_abis_drop_the_removed_functions(name):
+    assert not REMOVED_NAMES[name] & {e["name"] for e in _load_abi(name)}
+
+
+def test_fallback_state_abi_is_the_five_value_form():
+    abi = {e["name"]: e for e in _load_abi("PooledLongTailVault")}
+    assert [o["name"] for o in abi["fallbackState"]["outputs"]] == ["loss", "repaid", "events", "unapplied", "uncoveredLoss"]
+
+
+def test_price_freshness_reader_is_gone():
+    from twyne_cli import contracts
+
+    assert not hasattr(contracts, "price_freshness_reader")
+    with pytest.raises(Exception):
+        _load_abi("PriceFreshnessReader")
+
+
 def test_v2_group_is_registered_with_global_flags_before_subcommand():
     result = CliRunner().invoke(cli, ["--json", "--block", "5", "v2", "--help"])
     assert result.exit_code == 0
@@ -335,19 +415,13 @@ def test_v2_group_is_registered_with_global_flags_before_subcommand():
 
 
 def test_vault_command_json_output_at_block(monkeypatch):
-    from twyne_cli.commands import v2 as cmd
-
-    seen = {}
-    vault, manager, iv, oracle, reader = make_world()
+    vault, manager, iv, oracle = make_world()
     ctx_stub = MagicMock()
     monkeypatch.setattr("twyne_cli.contracts.collateral_vault_v2", lambda a: vault)
     monkeypatch.setattr("twyne_cli.contracts.vault_manager_v2", lambda a: manager)
     monkeypatch.setattr("twyne_cli.contracts.credit_vault", lambda a: iv)
-    monkeypatch.setattr("twyne_cli.contracts.price_freshness_reader", lambda a: reader)
     monkeypatch.setattr("twyne_cli.contracts.oracle_router_at", lambda a: oracle)
-    monkeypatch.setattr(cmd, "_block_time", lambda b: seen.setdefault("block", b) and 10_000)
     vault.twyneVaultManager = fn("0x00000000000000000000000000000000000000M1")
-    manager.priceFreshnessReader = fn(READER)
     monkeypatch.setattr("twyne_cli.context.TwyneContext.connect", lambda self: ctx_stub)
     monkeypatch.setattr("twyne_cli.context.TwyneContext.disconnect", lambda self: None)
 
@@ -355,5 +429,33 @@ def test_vault_command_json_output_at_block(monkeypatch):
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["b_total_value"] == 1_084 and data["price_of_c"]["status"] == "fresh"
-    assert seen["block"] == 42
+    assert data["dyn_liq_ltv_t_bps"] is None and data["liq_ltv_t_star_bps"] == 8_000
     vault.twyneVaultManager.assert_called_with(block_identifier=42)
+
+
+def _stub_connection(monkeypatch):
+    monkeypatch.setattr("twyne_cli.context.TwyneContext.connect", lambda self: MagicMock())
+    monkeypatch.setattr("twyne_cli.context.TwyneContext.disconnect", lambda self: None)
+    monkeypatch.setattr("twyne_cli.commands.v2._block_time", lambda b: 10_000)
+
+
+def test_pool_command_builds_every_row(monkeypatch):
+    # the row list is built eagerly, so a renamed state key fails here
+    pool = make_pool(fallbackRecordedAt=1_000, lossExcisionDueAt=1_600, pooledParamsRegistry=ZERO)
+    monkeypatch.setattr("twyne_cli.contracts.pooled_vault", lambda a: pool)
+    _stub_connection(monkeypatch)
+    result = CliRunner().invoke(cli, ["--json", "v2", "pool", pool.address])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["fallback_record"]["events"] == 3 and data["bucket"]["debt_raw"] == 12
+    assert data["loss_excision"]["status"] == "due"
+
+
+def test_account_command_builds_every_row(monkeypatch):
+    pool = make_account_pool()
+    monkeypatch.setattr("twyne_cli.contracts.pooled_vault", lambda a: pool)
+    _stub_connection(monkeypatch)
+    result = CliRunner().invoke(cli, ["--json", "v2", "account", pool.address, BORROWER])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["dyn_liq_ltv_t_bps"] == 6_500 and data["capacity_credit_raw"] == 260

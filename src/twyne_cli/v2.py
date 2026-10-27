@@ -5,6 +5,11 @@ Symbols follow the V2 specification: C collateral, B_ext external debt, B_int ac
 Raw amounts are in token units of their asset. B_total and C values are in the intermediate
 vault's unit of account (C at the bid, liabilities at the ask), as the vault values them.
 
+There is one liquidation trigger (`canLiquidate`): B_tot > dyn_liqLTV_t * C, with
+dyn_liqLTV_t = min(liqLTV_t*, cap / C) and liqLTV_t* = min(liqLTV_t, max_liqLTV_t). A per-vault build
+exposes neither `cap` nor dyn_liqLTV_t nor the reservation floor and target (integration-specific
+internals); those come from the periphery lens (`TODO(lens)`). A pooled vault exposes them per account.
+
 Each function takes already-built contract objects so the tests need no RPC.
 """
 
@@ -14,12 +19,9 @@ from typing import Any
 
 from .constants import BPS
 
-# Price-of-C staleness status
+# Price-of-C status ("fresh price or revert": the router adapter for C is the one staleness bound)
 FRESH = "fresh"
-STALE = "stale"
-NO_BOUND = "no-bound"  # the key has no normal bound (collateralPriceMaxAge == 0)
-READER_MISSING = "reader-missing"  # a bound is set but no reader: the vault fails closed
-UNREADABLE = "unreadable"  # the reader reverted (unknown adapter type): the vault fails closed
+UNAVAILABLE = "unavailable"  # no fresh price of C: every operation but a plain repay reverts (CollateralPriceStale)
 
 # VaultV2.selfSettlementMode(): how the borrower's own touches settle B_int
 SELF_SETTLEMENT_MODES = {0: "caller-supplied", 1: "receipt-token-deposit", 2: "converter"}
@@ -39,33 +41,12 @@ def _try(fn, block: int | None, *args) -> Any | None:
         return None
 
 
-def price_status(
-    max_age: int, reader: str, updated_at: int | None, now: int
-) -> dict:
-    """Status of the router's price of C against the key's normal bound (mirrors the vault's gate)."""
-    if max_age == 0:
-        return {"status": NO_BOUND, "max_age": 0, "age": None, "blocked_operations": False}
-    if reader == ZERO_ADDRESS:
-        return {"status": READER_MISSING, "max_age": max_age, "age": None, "blocked_operations": True}
-    if updated_at is None:
-        return {"status": UNREADABLE, "max_age": max_age, "age": None, "blocked_operations": True}
-    age = max(0, now - updated_at)
-    stale = updated_at + max_age < now
-    return {
-        "status": STALE if stale else FRESH,
-        "max_age": max_age,
-        "age": age,
-        "updated_at": updated_at,
-        # stale: borrow, withdraw with debt, settle, rebalance are blocked; repay, deposit, liquidate stay open
-        "blocked_operations": stale,
-    }
-
-
-def vault_v2_state(vault, manager, iv, oracle, reader, block: int | None, now: int) -> dict:
+def vault_v2_state(vault, manager, iv, oracle, block: int | None) -> dict:
     """State of one V2 collateral vault.
 
-    `vault`, `manager`, `iv` (intermediate vault, EVault ABI), `oracle` (its router) and `reader` are
-    contract objects. `reader` may be None when the manager has no reader.
+    `vault`, `manager`, `iv` (intermediate vault, EVault ABI) and `oracle` (its router) are contract
+    objects. `can_liquidate` is the vault's own single trigger; the health factor is measured against
+    liqLTV_t*, which is an upper bound of dyn_liqLTV_t, so it never reads lower than the trigger does.
     """
     asset = _call(vault.asset, block)
     target_vault = _call(vault.targetVault, block)
@@ -80,6 +61,8 @@ def vault_v2_state(vault, manager, iv, oracle, reader, block: int | None, now: i
     iv_debt = int(_call(vault.maxRelease, block))
     b_int = max(0, iv_debt - c_lp)
     liq_ltv = int(_call(vault.twyneLiqLTV, block))
+    _buffer, max_liq_ltv = (int(x) for x in _call(manager.liqParams, block, iv_addr, target_vault, target_asset))
+    liq_ltv_star = min(liq_ltv, max_liq_ltv)
     phi = int(_call(manager.rebalanceFee, block, iv_addr, target_vault, target_asset))
     max_feasible = int(_call(vault.maxFeasibleLiqLTV, block))
     can_liquidate = bool(_call(vault.canLiquidate, block))
@@ -94,6 +77,8 @@ def vault_v2_state(vault, manager, iv, oracle, reader, block: int | None, now: i
     c_value = quote(c, asset, 0)  # bid
     b_ext_value = quote(b_ext, target_asset, 1)  # ask
     b_int_value = quote(b_int, reserve, 1)
+    # Estimate: the vault sums B_int in loan units, adds one unit and quotes once at the ask
+    # (TODO(lens): the exact B_tot). The trigger itself is `can_liquidate`.
     b_total_value = None
     health = None
     operating_ltv_bps = None
@@ -104,19 +89,17 @@ def vault_v2_state(vault, manager, iv, oracle, reader, block: int | None, now: i
             operating_ltv_bps = 0
         elif c_value > 0:
             operating_ltv_bps = b_total_value * BPS // c_value
-            health = liq_ltv * c_value / (b_total_value * BPS)  # liqLTV_t / LTV_t
+            health = liq_ltv_star * c_value / (b_total_value * BPS)  # liqLTV_t* / LTV_t
         else:
             operating_ltv_bps = None
             health = 0.0
 
-    max_age = int(_call(manager.collateralPriceMaxAge, block, iv_addr, target_vault, target_asset))
-    updated_at = None
-    reader_addr = ZERO_ADDRESS
-    if reader is not None:
-        reader_addr = reader.address if hasattr(reader, "address") else str(reader)
-        router = _call(iv.oracle, block)
-        updated_at = _try(reader.priceUpdatedAt, block, router, asset, uoa)
-        updated_at = None if updated_at is None else int(updated_at)
+    # Fresh price or revert: the router must quote C now (mirrors CreditLoanV2Checks.collateralPriceUsable)
+    fresh = _try(oracle.getQuotes, block, c or 1, asset, uoa) is not None
+
+    # Cap of a reservation (CreditLoanV2Checks.reservationRule): IV cash plus the credit held against the IV debt
+    cash = _opt_int(_try(iv.cash, block))
+    cash_cap = None if cash is None else cash + min(c_lp, iv_debt)
 
     # Newer than the base the vault was built on: absent views read as None, not as an error
     mode = _try(vault.selfSettlementMode, block) if hasattr(vault, "selfSettlementMode") else None
@@ -126,6 +109,7 @@ def vault_v2_state(vault, manager, iv, oracle, reader, block: int | None, now: i
         converter = _try(manager.settlementConverter, block, iv_addr, target_vault, target_asset)
         tolerance = _opt_int(_try(manager.settlementConverterTolerance, block, iv_addr, target_vault, target_asset))
     borrow_buffer = _opt_int(_try(manager.borrowBuffer, block, iv_addr, target_vault, target_asset))
+    fee_cap = _opt_int(_try(manager.MAX_REBALANCE_FEE, block)) if hasattr(manager, "MAX_REBALANCE_FEE") else None
 
     return {
         "vault": vault.address,
@@ -140,25 +124,41 @@ def vault_v2_state(vault, manager, iv, oracle, reader, block: int | None, now: i
         "b_int_raw": b_int,
         "c_lp_raw": c_lp,
         "rebalance_fee_bps": phi,
+        "rebalance_fee_cap_bps": fee_cap,
         "c_value": c_value,
         "b_ext_value": b_ext_value,
         "b_int_value": b_int_value,
         "b_total_value": b_total_value,
         "liq_ltv_t_bps": liq_ltv,
+        "max_liq_ltv_t_bps": max_liq_ltv,
+        "liq_ltv_t_star_bps": liq_ltv_star,
+        "dyn_liq_ltv_t_bps": None,  # TODO(lens): min(liqLTV_t*, cap / C); `cap` is not a vault view
         "max_feasible_liq_ltv_t_bps": max_feasible,
         "operating_ltv_t_bps": operating_ltv_bps,
         "health_factor_t": health,
         "can_liquidate": can_liquidate,
         "externally_liquidated": externally_liquidated,
-        "price_of_c": price_status(max_age, reader_addr, updated_at, now),
+        "price_of_c": {
+            "status": FRESH if fresh else UNAVAILABLE,
+            # without a fresh price every operation reverts with CollateralPriceStale, except a plain repay
+            "blocked_operations": not fresh,
+        },
+        # Reservation of the borrower's own touch: max(floor, min(target, cash cap)). The floor (for B_ext)
+        # and the target (capacity at liqLTV_t* * C) are integration-specific internals of the vault.
+        "reservation": {
+            "current_raw": c_lp,
+            "floor_raw": None,  # TODO(lens)
+            "target_raw": None,  # TODO(lens)
+            "cash_cap_raw": cash_cap,
+        },
         "self_settlement": {
             "mode": mode,
             "name": None if mode is None else SELF_SETTLEMENT_MODES.get(mode, "unknown"),
             "converter": converter,
             "converter_tolerance_bps": tolerance,
         },
-        # Max-borrow ramp delta (1e4). 0 = no ramp. Risk-adding operations must end at or below
-        # the ramped borrow LTV; the vault checks it, this read shows only whether it is on.
+        # Max-borrow ramp delta (1e4). 0 = no ramp. The ramp reads dyn_liqLTV_t. Risk-adding operations
+        # must end at or below the ramped borrow LTV; the vault checks it, this read shows only whether it is on.
         "borrow_ramp": {
             "delta_bps": borrow_buffer,
             "enabled": None if borrow_buffer is None else borrow_buffer != 0,
@@ -167,13 +167,18 @@ def vault_v2_state(vault, manager, iv, oracle, reader, block: int | None, now: i
 
 
 def loss_excision_state(recorded_at, due_at, now: int) -> dict:
-    """Option A cut-off: from `due_at` anyone may call `exciseLoss`. Option B has no such view.
+    """Who may call `exciseLoss`, and from when.
 
-    `due_at` 0 = no fallback record; 2**256-1 = only governance may excise (`residualAfter` = 0).
+    Option A (has `lossExcisionDueAt`): from `due_at` anyone may call it; `due_at` 0 = no fallback record;
+    2**256-1 = only governance may (`residualAfter` = 0). Option B (has `fallbackRecordedAt` only): anyone,
+    at any time. Neither view: the ABI predates both, so nothing is known.
     """
     if recorded_at is None and due_at is None:
-        return {"option": "B", "recorded_at": None, "due_at": None, "status": "not-applicable", "seconds_left": None}
-    recorded_at, due_at = int(recorded_at or 0), int(due_at or 0)
+        return {"option": None, "recorded_at": None, "due_at": None, "status": "not-applicable", "seconds_left": None}
+    recorded_at = int(recorded_at or 0)
+    if due_at is None:
+        return {"option": "B", "recorded_at": recorded_at, "due_at": None, "status": "permissionless", "seconds_left": 0}
+    due_at = int(due_at)
     if due_at == 0:
         status, left = "no-record", None
     elif due_at >= 2**255:
@@ -194,12 +199,11 @@ def pool_state(pool, registry, block: int | None, now: int) -> dict:
     target_vault = _call(pool.targetVault, block)
     target_asset = _call(pool.targetAsset, block)
     delta_x, d_max = (int(x) for x in _call(pool.pooledParams, block))
-    active, finalized, scan, loss, repaid, neg_tot = _call(pool.fallbackState, block)
+    loss, repaid, events, unapplied, uncovered = _call(pool.fallbackState, block)
     price_ok, p_c = _call(pool.collateralPrice, block)
     band_feasible = None
     if registry is not None:
         band_feasible = bool(_call(registry.isBandFeasible, block, iv, target_vault, target_asset))
-    age = _try(pool.priceAge, block)
     caps = _try(registry.poolCaps, block, iv, target_vault, target_asset) if registry is not None else None
     c_tot = int(_call(pool.cTot, block))
     b_ext_pool = int(_call(pool.extDebt, block))
@@ -221,7 +225,14 @@ def pool_state(pool, registry, block: int | None, now: int) -> dict:
         "owed_credit_raw": int(_call(pool.owedCredit, block)),
         "b_ext_pool_raw": b_ext_pool,
         "iv_debt_raw": int(_call(pool.ivDebt, block)),
-        "rate": int(_call(pool.rate, block)),
+        "posted_book_raw": _opt_int(_try(pool.postedBookOf, block)),
+        "residual_debt_raw": _opt_int(_try(pool.residualDebt, block)),
+        "unbacked_loss_raw": _opt_int(_try(pool.unbackedLoss, block)),
+        # Option A only (claim bucket); Option B has no bucket
+        "bucket": {
+            "c_raw": _opt_int(_try(pool.bucketC, block)) if hasattr(pool, "bucketC") else None,
+            "debt_raw": _opt_int(_try(pool.bucketDebt, block)) if hasattr(pool, "bucketDebt") else None,
+        },
         "max_feasible_liq_ltv_t_bps": int(_call(pool.maxFeasibleLiqLTV, block)),
         "external_risk": bool(_call(pool.externalRisk, block)),
         "excision_band": {
@@ -231,13 +242,13 @@ def pool_state(pool, registry, block: int | None, now: int) -> dict:
             "growth_bound_bps": int(_call(pool.excisionGrowthBound, block)),
             "band_feasible": band_feasible,
         },
+        # The open record: sums over its events. It is open while an account has not applied it.
         "fallback_record": {
-            "open": bool(active),
-            "finalized": bool(finalized),
-            "scan_open": bool(scan),
+            "open": int(unapplied) != 0,
+            "events": int(events),
             "loss_credit_raw": int(loss),
             "repaid_debt_raw": int(repaid),
-            "negative_total_raw": int(neg_tot),
+            "uncovered_loss_raw": int(uncovered),  # charges above the caps, not yet rebased
             "pending_splits": int(_call(pool.pendingSplits, block)),
         },
         # Per-pool size caps of the key (registry; 0 = no cap). None: the registry has no poolCaps.
@@ -254,7 +265,6 @@ def pool_state(pool, registry, block: int | None, now: int) -> dict:
             "available": bool(price_ok),
             "bid": int(p_c),
             "fresh": bool(_call(pool.isPriceFresh, block)),
-            "age": None if age is None else int(age),
         },
         "settle_events": int(_call(pool.settleEventCount, block)),
     }
@@ -285,17 +295,23 @@ def account_state(pool, borrower: str, block: int | None) -> dict:
     out["b_ext_raw"] = int(_call(pool.bExtOf, block, borrower))
     out["b_int_raw"] = int(_call(pool.bIntOf, block, borrower))
     out["iv_debt_raw"] = int(_call(pool.ivDebtOf, block, borrower))
+    # Reservation of the account's own touch: max(floor, capacity target). The floor is for B_ext; the target
+    # is the capacity at liqLTV_t* * C (needs the price of C). The pool reserves the target best effort.
     out["required_credit_raw"] = _opt_int(_try(pool.requiredCreditOf, block, borrower))
+    out["capacity_credit_raw"] = _opt_int(_try(pool.capacityCreditOf, block, borrower))
     # Views that read the price of C revert beyond the liquidation bound: report null, not an error
     out["c_value"] = _opt_int(_try(pool.cValueOf, block, borrower))
     out["b_total_value"] = _opt_int(_try(pool.totalDebtOf, block, borrower))
     out["ltv_t_bps"] = _opt_int(_try(pool.ltvOf, block, borrower))
+    # dyn_liqLTV_t = min(liqLTV_t*, capacity / C): the one trigger is LTV_t > dyn_liqLTV_t (or external risk)
+    out["dyn_liq_ltv_t_bps"] = _opt_int(_try(pool.dynLiqLtvOf, block, borrower))
+    out["capacity_value"] = _opt_int(_try(pool.capacityValueOf, block, borrower))
     out["excess_credit"] = _opt_int(_try(pool.excessOf, block, borrower))
     out["incentive_bps"] = _opt_int(_try(pool.incentiveOf, block, borrower))
     out["liquidatable"] = _opt_bool(_try(pool.isLiquidatable, block, borrower))
     out["excisable"] = _opt_bool(_try(pool.isExcisable, block, borrower))
-    ltv = out["ltv_t_bps"]
-    out["health_factor_t"] = None if not ltv or ltv >= 2**255 else out["liq_ltv_t_bps"] / ltv
+    ltv, dyn = out["ltv_t_bps"], out["dyn_liq_ltv_t_bps"]
+    out["health_factor_t"] = None if not ltv or ltv >= 2**255 or dyn is None else dyn / ltv  # dyn_liqLTV_t / LTV_t
     return out
 
 
