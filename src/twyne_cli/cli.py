@@ -67,12 +67,14 @@ from .commands.init import init  # noqa: E402
 from .commands.protocol import protocol  # noqa: E402
 from .commands.tx import tx  # noqa: E402
 from .commands.user import user  # noqa: E402
+from .commands.v2 import v2  # noqa: E402
 from .commands.vault import vault  # noqa: E402
 
 cli.add_command(completion)
 cli.add_command(vault)
 cli.add_command(protocol)
 cli.add_command(user)
+cli.add_command(v2)
 cli.add_command(config)
 cli.add_command(tx)
 cli.add_command(init)

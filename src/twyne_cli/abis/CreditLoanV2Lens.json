@@ -1,0 +1,821 @@
+[
+  {
+    "type": "function",
+    "name": "kindOf",
+    "inputs": [
+      {
+        "name": "vault",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "enum CreditLoanV2VaultLensBase.Kind"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "previewExternalLiquidation",
+    "inputs": [
+      {
+        "name": "vault",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "p",
+        "type": "tuple",
+        "internalType": "struct CreditLoanV2VaultLensBase.HandlerPreview",
+        "components": [
+          {
+            "name": "externallyLiquidated",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "externalPositionHealthy",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "priceFresh",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "callerMustBeBorrower",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "executable",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "collateralBalance",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "creditBalance",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "loanRepaid",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxRelease",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "releaseAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "ivBadDebt",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "externalDebtValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "collateralLeftValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "collateralTempValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "creditNewValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "borrowerValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "borrowerClaim",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "creditFromCaller",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "creditToCaller",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "collateralFromCaller",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "collateralToCaller",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "vaultState",
+    "inputs": [
+      {
+        "name": "vault",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "s",
+        "type": "tuple",
+        "internalType": "struct CreditLoanV2VaultLensBase.VaultState",
+        "components": [
+          {
+            "name": "vault",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "kind",
+            "type": "uint8",
+            "internalType": "enum CreditLoanV2VaultLensBase.Kind"
+          },
+          {
+            "name": "borrower",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "asset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "reserve",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "targetVault",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "targetAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "intermediateVault",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "unitOfAccount",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "collateral",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "collateralValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "reservedCredit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "externalDebt",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "externalDebtValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "intermediateDebt",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "internalDebt",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "settlementBorrow",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalDebtValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "twyneLiqLTV",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "lam",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "capacity",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "dynLiqLTV",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "capacityBinds",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "maxFeasibleLiqLTV",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "ltv",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "healthFactor",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceUsable",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "liquidatable",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "canLiquidate",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "externallyLiquidated",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "externalHealth",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "extLiqLTVCollateral",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "extLiqLTVCredit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "params",
+            "type": "tuple",
+            "internalType": "struct CreditLoanV2LensBase.KeyParams",
+            "components": [
+              {
+                "name": "buffer",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "maxLiqLTV",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "alpha",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "phi",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "iMax",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "borrowBuffer",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "residueReceiver",
+                "type": "address",
+                "internalType": "address"
+              }
+            ]
+          },
+          {
+            "name": "reservation",
+            "type": "tuple",
+            "internalType": "struct CreditLoanV2LensBase.Reservation",
+            "components": [
+              {
+                "name": "floor",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "target",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "cashCap",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "ruleTarget",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "borrowLimitValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "rampExcess",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "ivLimitReached",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "settlement",
+            "type": "uint8",
+            "internalType": "enum CreditLoanV2LensBase.Settlement"
+          },
+          {
+            "name": "borrowerClaim",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "liquidatorCollateral",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "aaveV4",
+            "type": "tuple",
+            "internalType": "struct CreditLoanV2LensBase.AaveV4Config",
+            "components": [
+              {
+                "name": "configPending",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "lowerConfigPending",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "cf0Pending",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "halted",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "positionKey",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "latestKey",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "cfActive",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "cfLatest",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "cfMin",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "vaultStates",
+    "inputs": [
+      {
+        "name": "vaults",
+        "type": "address[]",
+        "internalType": "address[]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "states",
+        "type": "tuple[]",
+        "internalType": "struct CreditLoanV2VaultLensBase.VaultState[]",
+        "components": [
+          {
+            "name": "vault",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "kind",
+            "type": "uint8",
+            "internalType": "enum CreditLoanV2VaultLensBase.Kind"
+          },
+          {
+            "name": "borrower",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "asset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "reserve",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "targetVault",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "targetAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "intermediateVault",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "unitOfAccount",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "collateral",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "collateralValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "reservedCredit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "externalDebt",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "externalDebtValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "intermediateDebt",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "internalDebt",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "settlementBorrow",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalDebtValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "twyneLiqLTV",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "lam",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "capacity",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "dynLiqLTV",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "capacityBinds",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "maxFeasibleLiqLTV",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "ltv",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "healthFactor",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceUsable",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "liquidatable",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "canLiquidate",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "externallyLiquidated",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "externalHealth",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "extLiqLTVCollateral",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "extLiqLTVCredit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "params",
+            "type": "tuple",
+            "internalType": "struct CreditLoanV2LensBase.KeyParams",
+            "components": [
+              {
+                "name": "buffer",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "maxLiqLTV",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "alpha",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "phi",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "iMax",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "borrowBuffer",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "residueReceiver",
+                "type": "address",
+                "internalType": "address"
+              }
+            ]
+          },
+          {
+            "name": "reservation",
+            "type": "tuple",
+            "internalType": "struct CreditLoanV2LensBase.Reservation",
+            "components": [
+              {
+                "name": "floor",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "target",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "cashCap",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "ruleTarget",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "borrowLimitValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "rampExcess",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "ivLimitReached",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "settlement",
+            "type": "uint8",
+            "internalType": "enum CreditLoanV2LensBase.Settlement"
+          },
+          {
+            "name": "borrowerClaim",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "liquidatorCollateral",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "aaveV4",
+            "type": "tuple",
+            "internalType": "struct CreditLoanV2LensBase.AaveV4Config",
+            "components": [
+              {
+                "name": "configPending",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "lowerConfigPending",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "cf0Pending",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "halted",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "positionKey",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "latestKey",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "cfActive",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "cfLatest",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "cfMin",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  }
+]

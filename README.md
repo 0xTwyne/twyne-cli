@@ -150,6 +150,10 @@ twyne protocol rates <asset-or-iv-address>  # params for specific asset or IV
 twyne protocol tvl                          # Twyne TVL from DefiLlama (no RPC needed)
 twyne protocol ext-ltvs                     # external protocol liq LTV params for all pairs
 twyne user <wallet-address>                 # all vaults owned by wallet
+twyne v2 vault <vault-address>              # credit~loan V2 vault: C, B_ext, B_int, B_total, C_LP, liqLTV_t*, health, single trigger, reservation, price of C (not deployed yet)
+twyne v2 pool <pool-address>                # pooled long-tail vault: totals, excision band, fallback record, pending splits
+twyne v2 account <pool> <borrower>          # one pooled account
+twyne v2 residual <pool-address>            # residual account R
 ```
 
 Append `--json` to force JSON output, or pipe to get JSON automatically:
